@@ -125,7 +125,7 @@ ACTOR_CONFIG=(
     actor_rollout_ref.actor.mindspeed.use_mbridge=True
     actor_rollout_ref.actor.mindspeed.vanilla_mbridge=True
     # Transformer Architecture Optimizations
-    actor_rollout_ref.actor.mindspeed.strategy=minspeed_megatron
+    actor_rollout_ref.actor.mindspeed.strategy=mindspeed_megatron
     actor_rollout_ref.actor.mindspeed.model_name=qwen3-32b
     actor_rollout_ref.actor.mindspeed.mcore_kwargs.spec='[mindspeed_llm.tasks.models.spec.qwen3_spec, layer_spec]'
     actor_rollout_ref.actor.mindspeed.mcore_kwargs.seq_length=${max_model_len}

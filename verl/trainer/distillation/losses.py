@@ -120,6 +120,17 @@ def compute_distillation_loss_range(
     }
 
 
+def _resolve_topk_loss_strategy(config: ActorConfig) -> str:
+    """Resolve actor strategy to the backend that owns the top-k loss implementation."""
+    strategy = config.strategy
+    if strategy == "mindspeed":
+        engine_strategy = getattr(getattr(config, "engine", None), "strategy", None)
+        if engine_strategy is None:
+            engine_strategy = getattr(getattr(config, "mindspeed", None), "strategy", None)
+        strategy = engine_strategy or strategy
+    return strategy
+
+
 def compute_topk_loss(
     config: ActorConfig,
     distillation_config: DistillationConfig,
@@ -134,18 +145,21 @@ def compute_topk_loss(
     - student_mass: (bsz, seqlen/cp_size)
     - teacher_mass: (bsz, seqlen/cp_size)
     """
-    match config.strategy:
+    strategy = _resolve_topk_loss_strategy(config)
+    match strategy:
         # VeOmni uses FSDP2 internally, so its loss computation is identical to FSDP.
-        case "fsdp" | "veomni":
+        case "fsdp" | "fsdp2" | "veomni" | "mindspeed_fsdp":
             import verl.trainer.distillation.fsdp.losses as fsdp_losses
 
             distillation_loss_fn = fsdp_losses.compute_forward_kl_topk
-        case "megatron":
+        case "megatron" | "mindspeed_megatron":
             import verl.trainer.distillation.megatron.losses as megatron_losses
 
             distillation_loss_fn = megatron_losses.compute_forward_kl_topk
         case _:
-            raise NotImplementedError(f"Unsupported strategy: {config.strategy=}")
+            raise NotImplementedError(
+                f"Unsupported strategy for top-k distillation loss: {config.strategy=}, resolved {strategy=}"
+            )
 
     outputs = distillation_loss_fn(
         student_logits=student_logits,

@@ -235,6 +235,35 @@ def gpt_model_provider(pre_process=True, post_process=True):
     return model
 
 
+def _get_mindspeed_fsdp_total_steps(optim_config: MindSpeedOptimizerConfig) -> int:
+    total_steps = getattr(optim_config, "lr_decay_steps", None)
+    if total_steps is None or total_steps <= 0:
+        total_steps = getattr(optim_config, "total_training_steps", -1)
+    return total_steps
+
+
+def _get_mindspeed_fsdp_warmup_ratio(optim_config: MindSpeedOptimizerConfig) -> float:
+    lr_warmup_steps = getattr(optim_config, "lr_warmup_steps", None)
+    total_steps = _get_mindspeed_fsdp_total_steps(optim_config)
+    if lr_warmup_steps is not None and lr_warmup_steps > 0:
+        if total_steps is None or total_steps <= 0:
+            raise ValueError(
+                "actor.optim.lr_warmup_steps was set to a positive value, but neither "
+                "actor.optim.lr_decay_steps nor actor.optim.total_training_steps is available to convert it "
+                "to MindSpeedMM FSDP's lr_warmup_ratio."
+            )
+        return lr_warmup_steps / total_steps
+
+    lr_warmup_steps_ratio = getattr(optim_config, "lr_warmup_steps_ratio", None)
+    if lr_warmup_steps_ratio is not None and lr_warmup_steps_ratio > 0:
+        return lr_warmup_steps_ratio
+
+    lr_warmup_ratio = getattr(optim_config, "lr_warmup_ratio", 0.0)
+    if lr_warmup_ratio is None or lr_warmup_ratio <= 0:
+        return 0.0
+    return lr_warmup_ratio
+
+
 def get_fsdp_trainer(model_config: HFModelConfig, engine_config: MindSpeedEngineConfig,
                      optim_config: MindSpeedOptimizerConfig):
     from mindspeed_mm.fsdp.train.trainer import Trainer
@@ -270,7 +299,10 @@ def get_fsdp_trainer(model_config: HFModelConfig, engine_config: MindSpeedEngine
     mm_args.training.seed = engine_config.seed
     mm_args.training.lr = optim_config.lr
     mm_args.training.lr_decay_style = optim_config.lr_decay_style
-    mm_args.training.lr_warmup_ratio = optim_config.lr_warmup_ratio
+    total_steps = _get_mindspeed_fsdp_total_steps(optim_config)
+    if total_steps is not None and total_steps > 0:
+        mm_args.training.train_iters = total_steps
+    mm_args.training.lr_warmup_ratio = _get_mindspeed_fsdp_warmup_ratio(optim_config)
     mm_args.training.weight_decay = optim_config.weight_decay
     mm_args.training.clip_grad = optim_config.clip_grad
     mm_args.training.optimizer = optim_config.optimizer

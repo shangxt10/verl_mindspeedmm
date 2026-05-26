@@ -68,6 +68,8 @@ def compute_forward_kl_topk(
     student_mass = student_topk_log_probs.exp().sum(dim=-1)
     teacher_mass = teacher_topk_log_probs.exp().sum(dim=-1)
     loss_config: DistillationLossConfig = config.distillation_loss
+    student_topk_log_probs = F.log_softmax(student_topk_log_probs, dim=-1)
+    teacher_topk_log_probs = F.log_softmax(teacher_topk_log_probs, dim=-1)
     if loss_config.log_prob_min_clamp is not None:
         student_topk_log_probs = student_topk_log_probs.clamp_min(loss_config.log_prob_min_clamp)
         teacher_topk_log_probs = teacher_topk_log_probs.clamp_min(loss_config.log_prob_min_clamp)

@@ -1360,6 +1360,21 @@ class RayPPOTrainer:
                         if curr_step_profile:
                             self.async_rollout_manager.start_profile()
                         gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
+                        # Debug: print a few student rollout prompts and responses for early training steps.
+                        if self.global_steps < 3:
+                            max_print = 10
+                            prompt_ids = gen_batch_output.batch["prompts"][:max_print]
+                            response_ids = gen_batch_output.batch["responses"][:max_print]
+                            prompt_texts = self.tokenizer.batch_decode(prompt_ids, skip_special_tokens=True)
+                            response_texts = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
+
+                            for i, (prompt_text, response_text) in enumerate(zip(prompt_texts, response_texts)):
+                                print(
+                                    f"\n[student_rollout] step={self.global_steps}, sample={i}"
+                                    f"\n[prompt]\n{prompt_text}"
+                                    f"\n[response]\n{response_text}\n",
+                                    flush=True,
+                                )
                         self.checkpoint_manager.sleep_replicas()
                         if curr_step_profile:
                             self.async_rollout_manager.stop_profile()

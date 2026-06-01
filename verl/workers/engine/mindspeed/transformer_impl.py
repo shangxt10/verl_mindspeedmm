@@ -237,6 +237,7 @@ class MindSpeedFSDPEngineWithLMHead(FSDPEngineWithLMHead):
                 move_buffers_to_device_recursive(self.module, "npu")
 
         params = convert_weight_keys(params, getattr(self.module, "_fsdp_wrapped_module", self.module))
+        params = {k.replace("module.", ""): v for k, v in params.items()}
 
         for k in list(params.keys()):
             if "mlp.experts.gate_up_proj" in k or "mlp.experts.down_proj" in k:

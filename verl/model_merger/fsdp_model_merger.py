@@ -203,6 +203,17 @@ class FSDPModelMerger(BaseModelMerger):
 
         return state_dict
 
+    def _remove_language_model_key_segments(self, state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Remove language_model. from merged FSDP checkpoint keys before HF save."""
+        for key in list(state_dict.keys()):
+            new_key = key.replace("language_model.", "")
+            if new_key == key:
+                continue
+            if new_key in state_dict:
+                raise ValueError(f"Key collision when renaming {key} -> {new_key}")
+            state_dict[new_key] = state_dict.pop(key)
+        return state_dict
+
     def merge_and_save(self):
         world_size = self._get_world_size()
         rank_zero_state_dict = self._load_rank_zero_state_dict(world_size)
@@ -220,6 +231,7 @@ class FSDPModelMerger(BaseModelMerger):
                 raise ValueError("test_hf_dir must be provided for test operation")
             self._validate_state_dict(merged_state_dict)
         elif self.config.operation == "merge":
+            merged_state_dict = self._remove_language_model_key_segments(merged_state_dict)
             self.save_hf_model_and_tokenizer(merged_state_dict)
             if self.config.hf_upload:
                 self.upload_to_huggingface()

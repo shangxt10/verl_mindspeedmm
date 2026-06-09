@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import inspect
 import logging
 import os
 import random
@@ -797,8 +798,12 @@ class AgentLoopWorker:
         if self.processor is None:
             return multi_modal_inputs
 
-        images = output.multi_modal_data.get("images")
-        videos = output.multi_modal_data.get("videos")
+        multi_modal_data = output.multi_modal_data or {}
+        images = multi_modal_data.get("images")
+        videos = multi_modal_data.get("videos")
+        if not images and not videos:
+            return multi_modal_inputs
+
         # split the videos and according metadatas
         if videos is not None:
             videos, video_metadatas = zip(*videos, strict=False)
@@ -831,15 +836,38 @@ class AgentLoopWorker:
         if self.processor is None:
             return compute_position_id_with_mask(attention_mask)  # (1, seq_len)
 
+        image_grid_thw = multi_modal_inputs.get("image_grid_thw")
+        video_grid_thw = multi_modal_inputs.get("video_grid_thw")
+        image_token_id = getattr(self.processor, "image_token_id", None)
+        video_token_id = getattr(self.processor, "video_token_id", None)
+        has_image_tokens = image_token_id is not None and torch.any(input_ids == image_token_id).item()
+        has_video_tokens = video_token_id is not None and torch.any(input_ids == video_token_id).item()
+        has_image_grid = image_grid_thw is not None and image_grid_thw.numel() > 0
+        has_video_grid = video_grid_thw is not None and video_grid_thw.numel() > 0
+        if not (has_image_grid or has_video_grid or has_image_tokens or has_video_tokens):
+            multi_modal_inputs.pop("mm_token_type_ids", None)
+            valid_mask = attention_mask[0].bool()
+            text_position_ids = torch.ones((1, len(input_ids[0])), dtype=torch.long, device=input_ids.device)
+            text_position_ids[0, valid_mask] = torch.arange(valid_mask.sum().item(), device=input_ids.device)
+            vision_position_ids = text_position_ids.unsqueeze(1).expand(-1, 3, -1)
+            return torch.cat((text_position_ids.unsqueeze(1), vision_position_ids), dim=1)
+
         multi_modal_kwargs = {
-            "image_grid_thw": multi_modal_inputs.get("image_grid_thw"),
-            "video_grid_thw": multi_modal_inputs.get("video_grid_thw"),
+            "image_grid_thw": image_grid_thw,
+            "video_grid_thw": video_grid_thw,
         }
         # For transformers>=5.3.0, mm_token_type_ids is only used to calculate position ids.
-        if multi_modal_inputs.pop("mm_token_type_ids", None) is not None:
+        multi_modal_inputs.pop("mm_token_type_ids", None)
+        get_rope_index_params = inspect.signature(self.processor.get_rope_index).parameters
+        accepts_mm_token_type_ids = "mm_token_type_ids" in get_rope_index_params or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in get_rope_index_params.values()
+        )
+        if accepts_mm_token_type_ids:
             mm_token_type_ids = torch.zeros_like(input_ids)
-            mm_token_type_ids[0][input_ids[0] == self.processor.image_token_id] = 1
-            mm_token_type_ids[0][input_ids[0] == self.processor.video_token_id] = 2
+            if image_token_id is not None:
+                mm_token_type_ids[0][input_ids[0] == image_token_id] = 1
+            if video_token_id is not None:
+                mm_token_type_ids[0][input_ids[0] == video_token_id] = 2
             multi_modal_kwargs["mm_token_type_ids"] = mm_token_type_ids
 
         # Model's get_rope_index has been dynamically bind to the processor.
@@ -851,8 +879,8 @@ class AgentLoopWorker:
         vision_position_ids = vision_position_ids.transpose(0, 1)  # (3, 1, seq_len) => (1, 3, seq_len)
 
         valid_mask = attention_mask[0].bool()
-        text_position_ids = torch.ones((1, len(input_ids[0])), dtype=torch.long)
-        text_position_ids[0, valid_mask] = torch.arange(valid_mask.sum().item())
+        text_position_ids = torch.ones((1, len(input_ids[0])), dtype=torch.long, device=input_ids.device)
+        text_position_ids[0, valid_mask] = torch.arange(valid_mask.sum().item(), device=input_ids.device)
         text_position_ids = text_position_ids.unsqueeze(0)
         position_ids = torch.cat((text_position_ids, vision_position_ids), dim=1)  # (1, 4, seq_length)
         return position_ids

@@ -844,7 +844,9 @@ class AgentLoopWorker:
         has_video_tokens = video_token_id is not None and torch.any(input_ids == video_token_id).item()
         has_image_grid = image_grid_thw is not None and image_grid_thw.numel() > 0
         has_video_grid = video_grid_thw is not None and video_grid_thw.numel() > 0
-        if not (has_image_grid or has_video_grid or has_image_tokens or has_video_tokens):
+        has_image_inputs = has_image_tokens and has_image_grid
+        has_video_inputs = has_video_tokens and has_video_grid
+        if not (has_image_inputs or has_video_inputs):
             multi_modal_inputs.pop("mm_token_type_ids", None)
             valid_mask = attention_mask[0].bool()
             text_position_ids = torch.ones((1, len(input_ids[0])), dtype=torch.long, device=input_ids.device)
@@ -853,8 +855,8 @@ class AgentLoopWorker:
             return torch.cat((text_position_ids.unsqueeze(1), vision_position_ids), dim=1)
 
         multi_modal_kwargs = {
-            "image_grid_thw": image_grid_thw,
-            "video_grid_thw": video_grid_thw,
+            "image_grid_thw": image_grid_thw if has_image_inputs else None,
+            "video_grid_thw": video_grid_thw if has_video_inputs else None,
         }
         # For transformers>=5.3.0, mm_token_type_ids is only used to calculate position ids.
         multi_modal_inputs.pop("mm_token_type_ids", None)
@@ -864,9 +866,9 @@ class AgentLoopWorker:
         )
         if accepts_mm_token_type_ids:
             mm_token_type_ids = torch.zeros_like(input_ids)
-            if image_token_id is not None:
+            if has_image_inputs:
                 mm_token_type_ids[0][input_ids[0] == image_token_id] = 1
-            if video_token_id is not None:
+            if has_video_inputs:
                 mm_token_type_ids[0][input_ids[0] == video_token_id] = 2
             multi_modal_kwargs["mm_token_type_ids"] = mm_token_type_ids
 

@@ -14,6 +14,8 @@
 
 
 import argparse
+import os
+from pprint import pformat
 
 import torch
 
@@ -30,6 +32,19 @@ MCORE_SUPPORT_MM_MODELS = []
 FSDP_SUPPORT_LLM_MODELS = []
 
 FSDP_SUPPORT_MM_MODELS = ["qwen3.5-27b", "qwen3.5-35b"]
+
+
+def _log_mindspeed_mm_config(additional_args: dict, verl_overrides: dict) -> None:
+    if os.getenv("MINDSPEED_MM_LOG", "0").lower() not in {"1", "true", "yes", "on"}:
+        return
+    if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+        return
+
+    config = {
+        "additional_args": additional_args,
+        "verl_overrides_after_parse": verl_overrides,
+    }
+    print(f"[verl->MindSpeed-MM][config]\n{pformat(config, width=120, sort_dicts=False)}", flush=True)
 
 
 def get_base_mcore_config_from_model_config(model_config: HFModelConfig) -> dict:
@@ -287,6 +302,23 @@ def get_fsdp_trainer(model_config: HFModelConfig, engine_config: MindSpeedEngine
         },
     }
 
+    total_steps = _get_mindspeed_fsdp_total_steps(optim_config)
+    lr_warmup_ratio = _get_mindspeed_fsdp_warmup_ratio(optim_config)
+    verl_overrides = {
+        "parallel.fsdp_plan.cpu_offload": bool(engine_config.offload_policy or engine_config.forward_only),
+        "model.model_name_or_path": model_config.path,
+        "training.seed": engine_config.seed,
+        "training.lr": optim_config.lr,
+        "training.lr_decay_style": optim_config.lr_decay_style,
+        "training.lr_warmup_ratio": lr_warmup_ratio,
+        "training.weight_decay": optim_config.weight_decay,
+        "training.clip_grad": optim_config.clip_grad,
+        "training.optimizer": optim_config.optimizer,
+    }
+    if total_steps is not None and total_steps > 0:
+        verl_overrides["training.train_iters"] = total_steps
+    _log_mindspeed_mm_config(engine_config.fsdp_kwargs, verl_overrides)
+
     mm_args = ConfigManager(config_class=Arguments, additional_args=engine_config.fsdp_kwargs).load_and_parse()
     if engine_config.offload_policy or engine_config.forward_only:
         mm_args.parallel.fsdp_plan.cpu_offload = True
@@ -299,10 +331,9 @@ def get_fsdp_trainer(model_config: HFModelConfig, engine_config: MindSpeedEngine
     mm_args.training.seed = engine_config.seed
     mm_args.training.lr = optim_config.lr
     mm_args.training.lr_decay_style = optim_config.lr_decay_style
-    total_steps = _get_mindspeed_fsdp_total_steps(optim_config)
     if total_steps is not None and total_steps > 0:
         mm_args.training.train_iters = total_steps
-    mm_args.training.lr_warmup_ratio = _get_mindspeed_fsdp_warmup_ratio(optim_config)
+    mm_args.training.lr_warmup_ratio = lr_warmup_ratio
     mm_args.training.weight_decay = optim_config.weight_decay
     mm_args.training.clip_grad = optim_config.clip_grad
     mm_args.training.optimizer = optim_config.optimizer

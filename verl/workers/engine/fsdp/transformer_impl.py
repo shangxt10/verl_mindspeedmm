@@ -81,6 +81,10 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 device_name = get_device_name()
 
 
+def _log_train_batch_size_enabled() -> bool:
+    return os.getenv("VERL_LOG_TRAIN_BATCH_SIZE", "0").lower() in {"1", "true", "yes", "on"}
+
+
 class FSDPEngine(BaseEngine):
     """
     Concrete Engine implementation using PyTorch FullyShardedDataParallel (FSDP).
@@ -603,6 +607,22 @@ class FSDPEngine(BaseEngine):
         micro_batches, indices = prepare_micro_batches(
             data=data, dp_group=self.get_data_parallel_group(), same_micro_num_in_dp=True
         )
+
+        if not forward_only and _log_train_batch_size_enabled() and torch.distributed.get_rank() == 0:
+            local_batch_size = len(data)
+            dp_size = self.get_data_parallel_size()
+            cp_size = self.ulysses_sequence_parallel_size
+            micro_batch_sizes = [len(micro_batch) for micro_batch in micro_batches]
+            print(
+                "[verl][train_batch_size] "
+                f"global_batch_size={local_batch_size * dp_size}, "
+                f"local_batch_size_per_dp={local_batch_size}, "
+                f"micro_batch_sizes_per_dp={micro_batch_sizes}, "
+                f"gradient_accumulation_steps={len(micro_batches)}, "
+                f"dp_size={dp_size}, cp_size={cp_size}, "
+                f"world_size={torch.distributed.get_world_size()}",
+                flush=True,
+            )
 
         output_lst = []
 

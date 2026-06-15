@@ -21,6 +21,7 @@ from tensordict import TensorDict
 from verl.base_config import BaseConfig
 from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
 from verl.utils.metric import AggregationType, Metric
+from verl.utils.opd_debug import log_opd_tensor, opd_debug_enabled
 from verl.workers.config import ActorConfig, DistillationConfig, DistillationLossConfig
 from verl.workers.utils.losses import ppo_loss
 from verl.workers.utils.padding import no_padding_2_padding
@@ -231,6 +232,12 @@ def distillation_ppo_loss(
         distillation_loss_config.distillation_loss_coef if distillation_loss_config.use_task_rewards else 1.0
     )
     policy_loss += distill_loss * distillation_loss_coef
+    log_opd_tensor(
+        "backward_loss_scalar",
+        policy_loss,
+        distillation_loss_coef=distillation_loss_coef,
+        use_task_rewards=distillation_loss_config.use_task_rewards,
+    )
     policy_metrics["distillation/loss"] = Metric(value=distill_loss, aggregation=AggregationType.SUM)
 
     return policy_loss, policy_metrics
@@ -260,6 +267,7 @@ def distillation_loss(
     )
     response_mask = data["response_mask"]
     loss_agg_mode = config.loss_agg_mode
+    log_opd_tensor("distillation_loss_before_aggregation", distillation_losses)
 
     distillation_metrics.update(
         compute_distillation_loss_range(distillation_losses=distillation_losses, response_mask=response_mask)
@@ -267,6 +275,11 @@ def distillation_loss(
     if loss_config.loss_max_clamp is not None:
         # clamping min is for k1 loss which can be negative
         distillation_losses = distillation_losses.clamp(min=-loss_config.loss_max_clamp, max=loss_config.loss_max_clamp)
+
+    if opd_debug_enabled():
+        response_mask_for_debug = response_mask.to_padded_tensor(False) if response_mask.is_nested else response_mask
+        log_opd_tensor("response_mask", response_mask_for_debug)
+        log_opd_tensor("masked_distillation_loss_sum", (distillation_losses * response_mask_for_debug).sum())
 
     if loss_config.use_policy_gradient:
         # Use negative distillation loss as reward, as done by https://thinkingmachines.ai/blog/on-policy-distillation/.
@@ -302,6 +315,14 @@ def distillation_loss(
             **config.global_batch_info,
         )
 
+    if opd_debug_enabled():
+        log_opd_tensor(
+            "distillation_loss_scalar",
+            distillation_loss,
+            loss_agg_mode=loss_agg_mode,
+            local_valid_tokens=response_mask_for_debug.sum().item(),
+            **config.global_batch_info,
+        )
     return distillation_loss, distillation_metrics
 
 
@@ -327,6 +348,10 @@ def compute_forward_kl_topk(
     else:
         response_mask_bool = data["response_mask"].bool()
     assert distillation_losses.shape == student_mass.shape == teacher_mass.shape == response_mask_bool.shape
+    log_opd_tensor("distillation_loss_gathered", distillation_losses)
+    log_opd_tensor("student_topk_mass_gathered", student_mass)
+    log_opd_tensor("teacher_topk_mass_gathered", teacher_mass)
+    log_opd_tensor("response_mask_gathered", response_mask_bool)
 
     # Log amount of mass in the top-k log probabilities for both student and teacher.
     student_mass = student_mass[response_mask_bool]
@@ -342,6 +367,7 @@ def compute_forward_kl_topk(
 
     # Due to use of top-k, student and teacher distributions don't sum to 1 -> divergences can be negative.
     distillation_losses = distillation_losses.clamp_min(0.0)
+    log_opd_tensor("distillation_loss_after_nonnegative_clamp", distillation_losses)
 
     return distillation_losses, distillation_metrics
 

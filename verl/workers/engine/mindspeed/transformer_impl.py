@@ -174,6 +174,77 @@ class MindSpeedFSDPEngineWithLMHead(FSDPEngineWithLMHead):
             gradient_accumulation_steps=gradient_accumulation_steps,
         )
 
+    def _log_backend_student_logits(self, logits, target_ids, temperature):
+        from verl.utils.opd_debug import log_opd_tensor
+
+        cp_rank = self.ulysses_device_mesh["sp"].get_local_rank() if self.ulysses_device_mesh else 0
+        local_seq_len = logits.shape[-2]
+        metadata = {
+            "cp_size": self.ulysses_sequence_parallel_size,
+            "cp_rank": cp_rank,
+            "sequence_start": cp_rank * local_seq_len,
+            "sequence_end": (cp_rank + 1) * local_seq_len,
+        }
+        log_opd_tensor("student_target_ids_local", target_ids, **metadata)
+        log_opd_tensor("student_temperature_local", temperature, **metadata)
+        log_opd_tensor("student_logits_local", logits, **metadata)
+
+    def _log_backend_loss_normalization(self, local_num_tokens, global_num_tokens, global_batch_size):
+        from verl.utils.opd_debug import log_opd_tensor
+
+        metadata = {
+            "cp_size": self.ulysses_sequence_parallel_size,
+            "cp_rank": self.ulysses_device_mesh["sp"].get_local_rank() if self.ulysses_device_mesh else 0,
+            "dp_size": self.get_data_parallel_size(),
+            "global_batch_size": global_batch_size,
+        }
+        log_opd_tensor("local_num_valid_tokens", local_num_tokens, **metadata)
+        log_opd_tensor("global_num_valid_tokens", global_num_tokens, **metadata)
+
+    def _log_backend_grad_norm(self, grad_norm):
+        from verl.utils.opd_debug import log_opd_tensor
+
+        log_opd_tensor(
+            "grad_norm",
+            grad_norm,
+            cp_size=self.ulysses_sequence_parallel_size,
+            cp_rank=self.ulysses_device_mesh["sp"].get_local_rank() if self.ulysses_device_mesh else 0,
+            dp_size=self.get_data_parallel_size(),
+            clip_grad=self.optimizer_config.clip_grad,
+        )
+
+    def optimizer_step(self):
+        from verl.utils.opd_debug import log_opd_tensor, opd_debug_enabled
+
+        if opd_debug_enabled():
+            from mindspeed_mm.fsdp.optimizer.clip_grad_norm import clip_grad_norm as mindspeed_clip_grad_norm
+            from torch.distributed.tensor import DTensor
+            from torch.nn.utils.clip_grad import _get_total_norm
+
+            params = [param for param in self.module.parameters() if param.grad is not None]
+            grads = [param.grad for param in params]
+            if grads:
+                # Match verl's generic FSDP2 norm calculation without applying clipping.
+                verl_grad_norm = _get_total_norm(grads, norm_type=2.0)
+                if isinstance(verl_grad_norm, DTensor):
+                    verl_grad_norm = verl_grad_norm.full_tensor()
+                verl_grad_norm = verl_grad_norm.to(get_device_id(), non_blocking=True)
+
+                # max_norm=0 is compute-only in MindSpeed-MM and reduces over its dp_cp FSDP group.
+                mindspeed_grad_norm = mindspeed_clip_grad_norm(self.module, max_norm=0.0, norm_type=2.0)
+                if isinstance(mindspeed_grad_norm, DTensor):
+                    mindspeed_grad_norm = mindspeed_grad_norm.full_tensor()
+
+                metadata = {
+                    "cp_size": self.ulysses_sequence_parallel_size,
+                    "cp_rank": self.ulysses_device_mesh["sp"].get_local_rank() if self.ulysses_device_mesh else 0,
+                    "dp_size": self.get_data_parallel_size(),
+                }
+                log_opd_tensor("grad_norm_verl_generic_preclip", verl_grad_norm, **metadata)
+                log_opd_tensor("grad_norm_mindspeed_fsdp_group_preclip", mindspeed_grad_norm, **metadata)
+
+        return super().optimizer_step()
+
     def _build_model_optimizer(self):
         if self.is_llm_model:
             raise ValueError(f"llm_model is not supported for mindspeed_fsdp backend now")

@@ -21,6 +21,7 @@ from torch.nn import functional as F
 
 from verl.experimental.agent_loop import AsyncLLMServerManager
 from verl.utils.config import omega_conf_to_dataclass
+from verl.utils.opd_debug import log_opd_tensor, opd_debug_enabled
 from verl.workers.config import (
     DistillationConfig,
     DistillationLossConfig,
@@ -134,4 +135,22 @@ class AsyncTeacherLLMServerManager:
         teacher_ids = torch.tensor(teacher_output.extra_fields["prompt_ids"], dtype=torch.int32)
         teacher_logprobs = torch.tensor(teacher_output.extra_fields["prompt_logprobs"])
         assert teacher_ids.shape[0] == teacher_logprobs.shape[0] == len(sequence_ids)
+        if opd_debug_enabled():
+            log_opd_tensor(
+                "teacher_input_ids",
+                torch.tensor(sequence_ids, dtype=torch.int64),
+                teacher_key=teacher_key,
+            )
+        log_opd_tensor(
+            "teacher_topk_ids",
+            teacher_ids,
+            teacher_key=teacher_key,
+            sequence_length=len(sequence_ids),
+        )
+        log_opd_tensor(
+            "teacher_topk_logprobs",
+            teacher_logprobs,
+            teacher_key=teacher_key,
+            sequence_length=len(sequence_ids),
+        )
         return teacher_ids, teacher_logprobs

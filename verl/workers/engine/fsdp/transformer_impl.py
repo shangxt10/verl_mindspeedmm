@@ -600,17 +600,36 @@ class FSDPEngine(BaseEngine):
     ) -> None:
         """Allow backend integrations to report their runtime batch layout."""
 
+    def _log_backend_student_logits(
+        self, logits: torch.Tensor, target_ids: torch.Tensor, temperature: torch.Tensor
+    ) -> None:
+        """Allow backend integrations to report student logits."""
+
+    def _log_backend_grad_norm(self, grad_norm: torch.Tensor) -> None:
+        """Allow backend integrations to report the computed gradient norm."""
+
+    def _log_backend_loss_normalization(
+        self, local_num_tokens: torch.Tensor, global_num_tokens: torch.Tensor, global_batch_size: int
+    ) -> None:
+        """Allow backend integrations to report loss normalization inputs."""
+
     def forward_backward_batch(self, data: TensorDict, loss_function: Callable, forward_only=False) -> list[TensorDict]:
         # note that the global_batch_size should include data on all the dp
         tu.assign_non_tensor(data, sp_size=self.ulysses_sequence_parallel_size)
 
         # compute num_tokens in global batch for loss normalization
         batch_num_tokens = data["loss_mask"].sum().to(get_device_id())
+        local_num_tokens = batch_num_tokens.clone()
         torch.distributed.all_reduce(
             batch_num_tokens, op=torch.distributed.ReduceOp.SUM, group=self.get_data_parallel_group()
         )
         tu.assign_non_tensor(data, batch_num_tokens=batch_num_tokens.item())
         tu.assign_non_tensor(data, dp_size=self.get_data_parallel_size())
+        self._log_backend_loss_normalization(
+            local_num_tokens=local_num_tokens,
+            global_num_tokens=batch_num_tokens,
+            global_batch_size=len(data) * self.get_data_parallel_size(),
+        )
 
         micro_batches, indices = prepare_micro_batches(
             data=data, dp_group=self.get_data_parallel_group(), same_micro_num_in_dp=True
@@ -684,6 +703,8 @@ class FSDPEngine(BaseEngine):
 
         if isinstance(grad_norm, DTensor):
             grad_norm = grad_norm.full_tensor()
+
+        self._log_backend_grad_norm(grad_norm)
 
         # if grad_norm is not finite, skip the update
         if not torch.isfinite(grad_norm):
@@ -1088,6 +1109,9 @@ class FSDPEngineWithLMHead(FSDPEngine):
                 logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
                 logits_rmpad.div_(temperature_rmpad.clamp(min=1e-8).unsqueeze(-1).to(logits_rmpad.dtype))
 
+                if distillation_use_topk:
+                    self._log_backend_student_logits(logits_rmpad, input_ids_rmpad_rolled, temperature_rmpad)
+
                 # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
                 inplace_backward = True
                 if calculate_entropy:
@@ -1171,6 +1195,9 @@ class FSDPEngineWithLMHead(FSDPEngine):
                 temperature = output_args["temperature"]  # (bsz,)
                 temperature = temperature.unsqueeze(-1).unsqueeze(-1)
                 logits.div_(temperature.clamp(min=1e-8).to(logits.dtype))
+
+                if distillation_use_topk:
+                    self._log_backend_student_logits(logits, input_ids_rmpad_rolled, temperature)
 
                 if calculate_entropy:
                     if not self.engine_config.entropy_checkpointing:

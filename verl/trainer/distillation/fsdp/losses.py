@@ -16,7 +16,9 @@
 import torch
 import torch.nn.functional as F
 
+from verl.utils.opd_debug import log_opd_tensor
 from verl.utils.ulysses import (
+    get_ulysses_sequence_parallel_rank,
     get_ulysses_sequence_parallel_world_size,
     slice_input_tensor,
 )
@@ -57,22 +59,39 @@ def compute_forward_kl_topk(
     teacher_topk_ids = teacher_topk_ids.values().unsqueeze(0)  # (1, total_nnz, topk)
 
     # 1. split across sp groups (bsz, seqlen, topk) => (bsz, seqlen/sp_size, topk)
-    if get_ulysses_sequence_parallel_world_size() > 1:
+    sp_size = get_ulysses_sequence_parallel_world_size()
+    sp_rank = get_ulysses_sequence_parallel_rank()
+    if sp_size > 1:
         teacher_topk_log_probs = slice_input_tensor(teacher_topk_log_probs, dim=1)
         teacher_topk_ids = slice_input_tensor(teacher_topk_ids, dim=1)
     assert teacher_topk_log_probs.shape[:2] == teacher_topk_ids.shape[:2] == student_logits.shape[:2]
+    local_seq_len = teacher_topk_ids.shape[1]
+    shard_metadata = {
+        "cp_size": sp_size,
+        "cp_rank": sp_rank,
+        "sequence_start": sp_rank * local_seq_len,
+        "sequence_end": (sp_rank + 1) * local_seq_len,
+    }
 
     # 2. compute token-wise KL divergence across sp groups
     student_log_probs = F.log_softmax(student_logits, dim=-1)
     student_topk_log_probs = torch.gather(student_log_probs, dim=-1, index=teacher_topk_ids)
+    log_opd_tensor("teacher_topk_ids_local", teacher_topk_ids, **shard_metadata)
+    log_opd_tensor("student_topk_logprobs_local", student_topk_log_probs, **shard_metadata)
+    log_opd_tensor("teacher_topk_logprobs_local", teacher_topk_log_probs, **shard_metadata)
     student_mass = student_topk_log_probs.exp().sum(dim=-1)
     teacher_mass = teacher_topk_log_probs.exp().sum(dim=-1)
+    log_opd_tensor("student_topk_mass_local", student_mass, **shard_metadata)
+    log_opd_tensor("teacher_topk_mass_local", teacher_mass, **shard_metadata)
     loss_config: DistillationLossConfig = config.distillation_loss
     student_topk_log_probs = F.log_softmax(student_topk_log_probs, dim=-1)
     teacher_topk_log_probs = F.log_softmax(teacher_topk_log_probs, dim=-1)
     if loss_config.log_prob_min_clamp is not None:
         student_topk_log_probs = student_topk_log_probs.clamp_min(loss_config.log_prob_min_clamp)
         teacher_topk_log_probs = teacher_topk_log_probs.clamp_min(loss_config.log_prob_min_clamp)
+    log_opd_tensor("student_topk_logprobs_normalized_local", student_topk_log_probs, **shard_metadata)
+    log_opd_tensor("teacher_topk_logprobs_normalized_local", teacher_topk_log_probs, **shard_metadata)
     distillation_losses = kl_divergence(log_q=student_topk_log_probs, log_p=teacher_topk_log_probs)
+    log_opd_tensor("distillation_loss_per_token_local", distillation_losses, **shard_metadata)
 
     return {"distillation_losses": distillation_losses, "student_mass": student_mass, "teacher_mass": teacher_mass}

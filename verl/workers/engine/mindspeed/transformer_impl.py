@@ -208,30 +208,6 @@ class MindSpeedFSDPEngineWithLMHead(FSDPEngineWithLMHead):
             self.optimizer = optimizer
             self.lr_scheduler = lr_scheduler
 
-    def optimizer_step(self):
-        """Clip gradients with MindSpeed-MM parallel groups and update parameters."""
-        import torch
-        from mindspeed_mm.fsdp.optimizer.clip_grad_norm import clip_grad_norm
-
-        assert self.optimizer_config.clip_grad is not None
-        grad_norm = clip_grad_norm(
-            self.module,
-            max_norm=self.optimizer_config.clip_grad,
-        )
-
-        if not torch.isfinite(grad_norm):
-            print(f"WARN: grad_norm is not finite: {grad_norm}")
-            self.optimizer.zero_grad()
-        else:
-            self.optimizer.step()
-
-        if self._qat_enabled:
-            from verl.utils.qat.core import invalidate_all_scales
-
-            invalidate_all_scales(self.module)
-
-        return grad_norm.item()
-
     def get_per_tensor_param(self, layered_summon=False, base_sync_done=False, **kwargs):
         from verl.utils.fsdp_utils import (
             load_fsdp_model_to_gpu,

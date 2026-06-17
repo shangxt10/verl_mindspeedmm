@@ -219,6 +219,48 @@ class MindSpeedFSDPEngineWithLMHead(FSDPEngineWithLMHead):
                 patched_modules,
             )
 
+    def _gather_mindspeed_mm_padded_cp_outputs(self, output, micro_batch):
+        if not self.is_mm_model:
+            return output
+        if self.ulysses_sequence_parallel_size <= 1:
+            return output
+
+        from verl.utils import tensordict_utils as tu
+
+        use_remove_padding = tu.get_non_tensor_data(
+            data=micro_batch, key="use_remove_padding", default=self.model_config.get("use_remove_padding", False)
+        )
+        if use_remove_padding:
+            return output
+
+        input_ids = micro_batch["input_ids"]
+        if not getattr(input_ids, "is_nested", False):
+            return output
+
+        seq_lens = input_ids.offsets().diff()
+        if seq_lens.numel() == 0:
+            return output
+        max_seq_len = int(seq_lens.max().item())
+
+        from mindspeed_mm.fsdp.distributed.context_parallel.communication import gather_forward_split_backward_with_cp
+
+        def gather_attr(attr_name):
+            tensor = getattr(output, attr_name, None)
+            if tensor is None or tensor.ndim < 2:
+                return
+            if tensor.shape[1] == max_seq_len:
+                return
+            setattr(output, attr_name, gather_forward_split_backward_with_cp(tensor, dim=1, gather_size=max_seq_len))
+
+        gather_attr("logits")
+        gather_attr("log_probs")
+        gather_attr("entropy")
+        return output
+
+    def prepare_model_outputs(self, output, output_args, micro_batch, logits_processor_func):
+        output = self._gather_mindspeed_mm_padded_cp_outputs(output, micro_batch)
+        return super().prepare_model_outputs(output, output_args, micro_batch, logits_processor_func)
+
     def _build_model_optimizer(self):
         if self.is_llm_model:
             raise ValueError(f"llm_model is not supported for mindspeed_fsdp backend now")

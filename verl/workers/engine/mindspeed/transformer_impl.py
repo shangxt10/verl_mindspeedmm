@@ -174,6 +174,51 @@ class MindSpeedFSDPEngineWithLMHead(FSDPEngineWithLMHead):
             gradient_accumulation_steps=gradient_accumulation_steps,
         )
 
+    def _patch_mindspeed_mm_padded_cp(self):
+        if not self.is_mm_model:
+            return
+        if self.ulysses_sequence_parallel_size <= 1:
+            return
+        if self.model_config.get("use_remove_padding", False):
+            return
+
+        import importlib
+
+        def generate_padded_cu_seqlen_params(position_ids, need_cpu_tensor=True):
+            # MindSpeed-MM Qwen3.5 defaults to packed 1NTD/TND when CP cu_seqlens
+            # are present. In verl padded mode, tensors are [B, S], so do not
+            # expose actual-token boundaries and let MindSpeed-MM fall back to BNSD.
+            seq_len = position_ids.shape[-1]
+
+            return {
+                "cu_seq_lens_q": None,
+                "cu_seq_lens_k": None,
+                "max_length_q": seq_len,
+                "max_length_k": seq_len,
+            }
+
+        module_names = [
+            "mindspeed_mm.fsdp.models.qwen3_5.modeling_qwen3_5",
+            "mindspeed_mm.fsdp.models.qwen3_5_moe.modeling_qwen3_5_moe",
+        ]
+        patched_modules = []
+        for module_name in module_names:
+            try:
+                module = importlib.import_module(module_name)
+            except ImportError:
+                continue
+            if hasattr(module, "generate_ulysses_cu_seqlen_params"):
+                module.generate_ulysses_cu_seqlen_params = generate_padded_cu_seqlen_params
+                patched_modules.append(module_name)
+
+        if patched_modules:
+            logger.warning(
+                "Patched MindSpeed-MM padded CP cu_seqlens for use_remove_padding=False, "
+                "ulysses_sequence_parallel_size=%s, modules=%s",
+                self.ulysses_sequence_parallel_size,
+                patched_modules,
+            )
+
     def _build_model_optimizer(self):
         if self.is_llm_model:
             raise ValueError(f"llm_model is not supported for mindspeed_fsdp backend now")
@@ -188,6 +233,7 @@ class MindSpeedFSDPEngineWithLMHead(FSDPEngineWithLMHead):
                 self._is_offload_param = False
                 self._is_offload_optimizer = False
             self.trainer, self.mm_args = get_fsdp_trainer(self.model_config, self.engine_config, self.optimizer_config)
+            self._patch_mindspeed_mm_padded_cp()
             module = self.trainer.model
             log_gpu_memory_usage("After FSDP", logger=None)
 

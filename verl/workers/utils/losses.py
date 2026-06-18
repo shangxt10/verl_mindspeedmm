@@ -103,17 +103,22 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
 
     from verl.utils.opd_debug import log_opd_tensor, opd_debug_enabled
 
-    if opd_debug_enabled():
+    debug_enabled = opd_debug_enabled()
+    if debug_enabled:
         debug_metadata = {
             "loss_agg_mode": loss_agg_mode,
             "loss_mode": loss_mode,
             "response_mask_shape": tuple(response_mask.shape),
+            "response_mask_sum": int(response_mask.sum().item()),
         }
 
         def debug_scalar(value):
             if isinstance(value, torch.Tensor):
                 return value.to(device=response_mask.device, non_blocking=True)
             return torch.tensor(value, device=response_mask.device)
+
+        def debug_valid_tokens(name, value):
+            log_opd_tensor(name, value[response_mask], **debug_metadata)
 
         log_opd_tensor(
             "ppo_loss_batch_num_tokens",
@@ -127,6 +132,33 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
         )
         log_opd_tensor("ppo_loss_dp_size", debug_scalar(config.global_batch_info["dp_size"]), **debug_metadata)
         log_opd_tensor("ppo_loss_response_mask", response_mask, **debug_metadata)
+        debug_valid_tokens("ppo_loss_log_prob_valid", log_prob)
+        debug_valid_tokens("ppo_loss_old_log_probs_valid", old_log_prob)
+        debug_valid_tokens("ppo_loss_advantages_valid", advantages)
+
+        if rollout_is_weights is not None:
+            debug_valid_tokens("ppo_loss_rollout_is_weights_valid", rollout_is_weights)
+
+        if loss_mode == "vanilla":
+            clip_ratio = config.clip_ratio
+            clip_ratio_low = config.clip_ratio_low if config.clip_ratio_low is not None else clip_ratio
+            clip_ratio_high = config.clip_ratio_high if config.clip_ratio_high is not None else clip_ratio
+            clip_ratio_c = config.get("clip_ratio_c", 3.0)
+
+            negative_approx_kl = torch.clamp(log_prob - old_log_prob, min=-20.0, max=20.0)
+            ratio = torch.exp(negative_approx_kl)
+            pg_losses1 = -advantages * ratio
+            pg_losses2 = -advantages * torch.clamp(ratio, 1 - clip_ratio_low, 1 + clip_ratio_high)
+            clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)
+            pg_losses3 = -advantages * clip_ratio_c
+            clip_pg_losses2 = torch.min(pg_losses3, clip_pg_losses1)
+            pg_losses = torch.where(advantages < 0, clip_pg_losses2, clip_pg_losses1)
+            if rollout_is_weights is not None:
+                pg_losses = pg_losses * rollout_is_weights
+
+            debug_valid_tokens("ppo_loss_negative_approx_kl_valid", negative_approx_kl)
+            debug_valid_tokens("ppo_loss_ratio_valid", ratio)
+            debug_valid_tokens("ppo_loss_pg_losses_valid", pg_losses)
 
     policy_loss_fn = get_policy_loss_fn(loss_mode)
     pg_loss, pg_metrics = policy_loss_fn(
@@ -138,6 +170,8 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
         config=config,
         rollout_is_weights=rollout_is_weights,
     )
+    if debug_enabled:
+        log_opd_tensor("ppo_loss_pg_loss_scalar", pg_loss.detach(), **debug_metadata)
 
     # AggregationType.MEAN for pg metrics: assumes policy_loss_fn normalizes by local_bsz/local_tokens
     # Ex: in compute_policy_loss_vanilla, pg_metrics are pg_clipfrac, ppo_kl, pg_clipfrac_lower

@@ -625,10 +625,13 @@ class FSDPEngine(BaseEngine):
         )
         tu.assign_non_tensor(data, batch_num_tokens=batch_num_tokens.item())
         tu.assign_non_tensor(data, dp_size=self.get_data_parallel_size())
+        global_batch_size = tu.get_non_tensor_data(
+            data=data, key="global_batch_size", default=len(data) * self.get_data_parallel_size()
+        )
         self._log_backend_loss_normalization(
             local_num_tokens=local_num_tokens,
             global_num_tokens=batch_num_tokens,
-            global_batch_size=len(data) * self.get_data_parallel_size(),
+            global_batch_size=global_batch_size,
         )
 
         micro_batches, indices = prepare_micro_batches(

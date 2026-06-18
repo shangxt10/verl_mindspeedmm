@@ -101,6 +101,33 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
 
     loss_mode = config.policy_loss.get("loss_mode", "vanilla")
 
+    from verl.utils.opd_debug import log_opd_tensor, opd_debug_enabled
+
+    if opd_debug_enabled():
+        debug_metadata = {
+            "loss_agg_mode": loss_agg_mode,
+            "loss_mode": loss_mode,
+            "response_mask_shape": tuple(response_mask.shape),
+        }
+
+        def debug_scalar(value):
+            if isinstance(value, torch.Tensor):
+                return value.to(device=response_mask.device, non_blocking=True)
+            return torch.tensor(value, device=response_mask.device)
+
+        log_opd_tensor(
+            "ppo_loss_batch_num_tokens",
+            debug_scalar(config.global_batch_info["batch_num_tokens"]),
+            **debug_metadata,
+        )
+        log_opd_tensor(
+            "ppo_loss_global_batch_size",
+            debug_scalar(config.global_batch_info["global_batch_size"]),
+            **debug_metadata,
+        )
+        log_opd_tensor("ppo_loss_dp_size", debug_scalar(config.global_batch_info["dp_size"]), **debug_metadata)
+        log_opd_tensor("ppo_loss_response_mask", response_mask, **debug_metadata)
+
     policy_loss_fn = get_policy_loss_fn(loss_mode)
     pg_loss, pg_metrics = policy_loss_fn(
         old_log_prob=old_log_prob,

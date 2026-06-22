@@ -217,6 +217,8 @@ class MindSpeedFSDPEngineWithLMHead(FSDPEngineWithLMHead):
         from verl.utils.opd_debug import log_opd_tensor, opd_debug_enabled
 
         if opd_debug_enabled():
+            import torch
+
             from mindspeed_mm.fsdp.optimizer.clip_grad_norm import clip_grad_norm as mindspeed_clip_grad_norm
             from torch.distributed.tensor import DTensor
             from torch.nn.utils.clip_grad import _get_total_norm

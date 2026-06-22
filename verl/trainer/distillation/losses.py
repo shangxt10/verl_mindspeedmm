@@ -333,9 +333,17 @@ def distillation_loss(
                 if rollout_is_weights is not None:
                     pg_losses = pg_losses * rollout_is_weights
 
+                manual_masked_sum = torch.sum(pg_losses * response_mask)
+                manual_token_mean_loss = (
+                    manual_masked_sum / loss_config.global_batch_info["batch_num_tokens"]
+                    * loss_config.global_batch_info["dp_size"]
+                )
+
                 debug_valid_tokens("distill_pg_negative_approx_kl_valid", negative_approx_kl)
                 debug_valid_tokens("distill_pg_ratio_valid", ratio)
                 debug_valid_tokens("distill_pg_pg_losses_valid", pg_losses)
+                log_opd_tensor("distill_pg_manual_masked_sum", manual_masked_sum, **debug_metadata)
+                log_opd_tensor("distill_pg_manual_token_mean_loss", manual_token_mean_loss, **debug_metadata)
 
         distillation_loss, pg_metrics = policy_loss_fn(
             old_log_prob=old_log_prob,

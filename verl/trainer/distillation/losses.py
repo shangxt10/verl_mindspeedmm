@@ -293,6 +293,50 @@ def distillation_loss(
         if response_mask.is_nested:
             response_mask = response_mask.to_padded_tensor(False)
         rollout_is_weights = data.get("rollout_is_weights", None)
+        if opd_debug_enabled():
+            debug_metadata = {
+                "policy_loss_mode": loss_config.policy_loss_mode,
+                "loss_agg_mode": loss_agg_mode,
+                "response_mask_shape": tuple(response_mask.shape),
+                "response_mask_sum": int(response_mask.sum().item()),
+                **loss_config.global_batch_info,
+            }
+
+            def debug_valid_tokens(name, value):
+                log_opd_tensor(name, value[response_mask], **debug_metadata)
+
+            log_opd_tensor("distill_pg_response_mask", response_mask, **debug_metadata)
+            debug_valid_tokens("distill_pg_log_prob_valid", log_prob)
+            debug_valid_tokens("distill_pg_old_log_probs_valid", old_log_prob)
+            debug_valid_tokens("distill_pg_advantages_valid", -distillation_losses.detach())
+
+            if rollout_is_weights is not None:
+                debug_valid_tokens("distill_pg_rollout_is_weights_valid", rollout_is_weights)
+
+            if loss_config.policy_loss_mode == "vanilla":
+                clip_ratio = loss_config.clip_ratio
+                clip_ratio_low = loss_config.clip_ratio_low if loss_config.clip_ratio_low is not None else clip_ratio
+                clip_ratio_high = loss_config.clip_ratio_high if loss_config.clip_ratio_high is not None else clip_ratio
+                clip_ratio_c = loss_config.get("clip_ratio_c", 3.0)
+
+                negative_approx_kl = torch.clamp(log_prob - old_log_prob, min=-20.0, max=20.0)
+                ratio = torch.exp(negative_approx_kl)
+                pg_losses1 = distillation_losses.detach() * ratio
+                pg_losses2 = distillation_losses.detach() * torch.clamp(
+                    ratio, 1 - clip_ratio_low, 1 + clip_ratio_high
+                )
+                clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)
+                pg_losses3 = distillation_losses.detach() * clip_ratio_c
+                clip_pg_losses2 = torch.min(pg_losses3, clip_pg_losses1)
+                advantages = -distillation_losses.detach()
+                pg_losses = torch.where(advantages < 0, clip_pg_losses2, clip_pg_losses1)
+                if rollout_is_weights is not None:
+                    pg_losses = pg_losses * rollout_is_weights
+
+                debug_valid_tokens("distill_pg_negative_approx_kl_valid", negative_approx_kl)
+                debug_valid_tokens("distill_pg_ratio_valid", ratio)
+                debug_valid_tokens("distill_pg_pg_losses_valid", pg_losses)
+
         distillation_loss, pg_metrics = policy_loss_fn(
             old_log_prob=old_log_prob,
             log_prob=log_prob,
@@ -302,6 +346,8 @@ def distillation_loss(
             config=loss_config,
             rollout_is_weights=rollout_is_weights,
         )
+        if opd_debug_enabled():
+            log_opd_tensor("distill_pg_loss_scalar", distillation_loss.detach(), **debug_metadata)
         pg_metrics = {f"distillation/{k[len('actor/') :]}": v for k, v in pg_metrics.items()}
         distillation_metrics.update(pg_metrics)
     else:

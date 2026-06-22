@@ -224,6 +224,12 @@ class MindSpeedFSDPEngineWithLMHead(FSDPEngineWithLMHead):
             params = [param for param in self.module.parameters() if param.grad is not None]
             grads = [param.grad for param in params]
             if grads:
+                local_grad_sq_sum = torch.zeros((), device=get_device_id())
+                for grad in grads:
+                    local_grad = grad.to_local() if isinstance(grad, DTensor) else grad
+                    local_grad_sq_sum += torch.sum(local_grad.detach().float().pow(2))
+                local_grad_norm = torch.sqrt(local_grad_sq_sum)
+
                 # Match verl's generic FSDP2 norm calculation without applying clipping.
                 verl_grad_norm = _get_total_norm(grads, norm_type=2.0)
                 if isinstance(verl_grad_norm, DTensor):
@@ -239,7 +245,10 @@ class MindSpeedFSDPEngineWithLMHead(FSDPEngineWithLMHead):
                     "cp_size": self.ulysses_sequence_parallel_size,
                     "cp_rank": self.ulysses_device_mesh["sp"].get_local_rank() if self.ulysses_device_mesh else 0,
                     "dp_size": self.get_data_parallel_size(),
+                    "dp_rank": self.get_data_parallel_rank(),
                 }
+                log_opd_tensor("local_grad_sq_sum_preclip", local_grad_sq_sum, **metadata)
+                log_opd_tensor("local_grad_norm_preclip", local_grad_norm, **metadata)
                 log_opd_tensor("grad_norm_verl_generic_preclip", verl_grad_norm, **metadata)
                 log_opd_tensor("grad_norm_mindspeed_fsdp_group_preclip", mindspeed_grad_norm, **metadata)
 

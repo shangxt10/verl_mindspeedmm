@@ -258,6 +258,15 @@ def distillation_loss(
     """
     assert distillation_config is not None
     loss_config: DistillationLossConfig = distillation_config.distillation_loss
+    global_batch_info = {
+        "dp_size": data["dp_size"],
+        "batch_num_tokens": data["batch_num_tokens"],
+        "global_batch_size": data["global_batch_size"],
+        "loss_scale_factor": config.loss_scale_factor,
+    }
+    config.global_batch_info.update(global_batch_info)
+    loss_config.global_batch_info.update(global_batch_info)
+
     distillation_loss_fn = get_distillation_loss_fn(loss_config.loss_mode)
     distillation_losses, distillation_metrics = distillation_loss_fn(
         config=config,
@@ -284,8 +293,6 @@ def distillation_loss(
     if loss_config.use_policy_gradient:
         # Use negative distillation loss as reward, as done by https://thinkingmachines.ai/blog/on-policy-distillation/.
         policy_loss_fn = get_policy_loss_fn(loss_config.policy_loss_mode)
-        for k, v in config.global_batch_info.items():
-            loss_config.global_batch_info[k] = v
         log_prob = no_padding_2_padding(model_output["log_probs"], data)
         old_log_prob = data["old_log_probs"]
         if old_log_prob.is_nested:

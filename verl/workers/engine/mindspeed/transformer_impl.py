@@ -160,20 +160,6 @@ class MindSpeedFSDPEngineWithLMHead(FSDPEngineWithLMHead):
             raise ValueError(f"{engine_config.model_name} is not supported for mindspeed_fsdp backend now")
         super().__init__(model_config, engine_config, optimizer_config, checkpoint_config)
 
-    def _log_backend_batch_info(
-        self,
-        local_batch_size_per_dp: int,
-        micro_batch_sizes_per_dp: list[int],
-        gradient_accumulation_steps: int,
-    ) -> None:
-        from mindspeed_mm.fsdp.utils.batch_debug import log_verl_batch_info
-
-        log_verl_batch_info(
-            local_batch_size_per_dp=local_batch_size_per_dp,
-            micro_batch_sizes_per_dp=micro_batch_sizes_per_dp,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-        )
-
     def _patch_mindspeed_mm_padded_cp(self):
         if not self.is_mm_model:
             return

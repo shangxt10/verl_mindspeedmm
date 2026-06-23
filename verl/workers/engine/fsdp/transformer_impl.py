@@ -592,14 +592,6 @@ class FSDPEngine(BaseEngine):
     def get_context_parallel_group(self):
         raise NotImplementedError
 
-    def _log_backend_batch_info(
-        self,
-        local_batch_size_per_dp: int,
-        micro_batch_sizes_per_dp: list[int],
-        gradient_accumulation_steps: int,
-    ) -> None:
-        """Allow backend integrations to report their runtime batch layout."""
-
     def forward_backward_batch(self, data: TensorDict, loss_function: Callable, forward_only=False) -> list[TensorDict]:
         # note that the global_batch_size should include data on all the dp
         tu.assign_non_tensor(data, sp_size=self.ulysses_sequence_parallel_size)
@@ -615,13 +607,6 @@ class FSDPEngine(BaseEngine):
         micro_batches, indices = prepare_micro_batches(
             data=data, dp_group=self.get_data_parallel_group(), same_micro_num_in_dp=True
         )
-
-        if not forward_only:
-            self._log_backend_batch_info(
-                local_batch_size_per_dp=len(data),
-                micro_batch_sizes_per_dp=[len(micro_batch) for micro_batch in micro_batches],
-                gradient_accumulation_steps=len(micro_batches),
-            )
 
         if not forward_only and _log_train_batch_size_enabled() and torch.distributed.get_rank() == 0:
             local_batch_size = len(data)

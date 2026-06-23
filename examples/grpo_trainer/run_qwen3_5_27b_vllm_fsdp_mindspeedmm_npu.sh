@@ -5,7 +5,6 @@ ps -aux | grep "VLLM" | grep -v grep| awk '{print $2}' | xargs kill -9 | pkill -
 export NON_MEGATRON=true
 export MULTI_STREAM_MEMORY_REUSE=2
 export OMP_NUM_THREADS=1
-export MINDSPEED_MM_LOG_BATCH_SIZE=${MINDSPEED_MM_LOG_BATCH_SIZE:-1}
 
 project_name='GRPO-Qwen3_5'
 exp_name='GRPO-Qwen3_5-27B'
@@ -94,7 +93,6 @@ MINDSPEED_CONFIG=(
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.model.model_id=qwen3_5
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.model.use_triton_gdn=True
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.model.freeze='[model.visual]'
-    +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.ulysses_parallel_size=$sp_size
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fsdp_plan.apply_modules="['model.visual.blocks.{*}', \
     'model.visual', 'model.language_model.layers.{*}', 'model.language_model.embed_tokens', 'model.language_model', 'lm_head']"
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.recompute=True

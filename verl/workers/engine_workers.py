@@ -192,10 +192,23 @@ class TrainingWorker(Worker, DistProfilerExtension):
         # perform all gather in dp group to ensure that it's correct.
         # Here each metric in metrics can be a list (micro-batch metrics) or a singleton
         # we should always sum the loss of each micro-batch as we scale by global_bsz/global_token
-        loss = torch.sum(torch.tensor(output.pop("loss"), device=self.device_name))
+        from verl.utils.opd_debug import log_opd_tensor, opd_debug_enabled
+
+        micro_losses = torch.tensor(output.pop("loss"), device=self.device_name)
+        loss = torch.sum(micro_losses)
         dp_group = self.engine.get_data_parallel_group()
+        if opd_debug_enabled():
+            debug_metadata = {
+                "num_micro_batches": micro_losses.numel(),
+                "dp_size": self.engine.get_data_parallel_size(),
+                "dp_rank": self.engine.get_data_parallel_rank(),
+            }
+            log_opd_tensor("postprocess_micro_loss_scalars", micro_losses, **debug_metadata)
+            log_opd_tensor("postprocess_local_micro_loss_sum", loss, **debug_metadata)
         if dp_group is not None:
             torch.distributed.all_reduce(loss, op=torch.distributed.ReduceOp.AVG, group=dp_group)
+        if opd_debug_enabled():
+            log_opd_tensor("postprocess_dp_averaged_loss", loss, **debug_metadata)
         loss = loss.item()
 
         # For grad_norm, we do not perform all reduce because it is already been done when clipping grad

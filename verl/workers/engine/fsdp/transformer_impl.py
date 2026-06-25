@@ -662,15 +662,136 @@ class FSDPEngine(BaseEngine):
             )
 
         output_lst = []
+        debug_micro_grads = os.getenv("MINDSPEED_MM_OPD_DEBUG_GRAD_EACH_MICRO", "0").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
         ctx = torch.no_grad() if forward_only else nullcontext()
 
-        for micro_batch in micro_batches:
+        for micro_batch_index, micro_batch in enumerate(micro_batches):
+            from verl.utils.opd_debug import log_opd_tensor, opd_debug_enabled
+
+            if opd_debug_enabled():
+                tu.assign_non_tensor(
+                    micro_batch,
+                    opd_micro_batch_index=micro_batch_index,
+                    opd_num_micro_batches=len(micro_batches),
+                )
+                debug_metadata = {
+                    "micro_batch_index": micro_batch_index,
+                    "num_micro_batches": len(micro_batches),
+                    "local_micro_batch_size": len(micro_batch),
+                    "dp_size": self.get_data_parallel_size(),
+                    "dp_rank": self.get_data_parallel_rank(),
+                    "cp_size": self.ulysses_sequence_parallel_size,
+                    "use_remove_padding": tu.get_non_tensor_data(
+                        data=micro_batch,
+                        key="use_remove_padding",
+                        default=True,
+                    ),
+                    "use_dynamic_bsz": tu.get_non_tensor_data(
+                        data=micro_batch,
+                        key="use_dynamic_bsz",
+                        default=True,
+                    ),
+                }
+
+                loss_mask = micro_batch["loss_mask"]
+                if loss_mask.is_nested:
+                    per_sample_valid_tokens = loss_mask.offsets().diff()
+                else:
+                    per_sample_valid_tokens = loss_mask.reshape(len(micro_batch), -1).sum(dim=-1)
+                log_opd_tensor("micro_batch_valid_tokens_per_sample", per_sample_valid_tokens, **debug_metadata)
+
+                if "input_ids" in micro_batch:
+                    input_ids = micro_batch["input_ids"]
+                    if input_ids.is_nested:
+                        input_lengths = input_ids.offsets().diff()
+                        input_samples = [sample.to(torch.int64) for sample in input_ids.unbind()]
+                        input_token_sums = torch.stack([sample.sum() for sample in input_samples])
+                        input_token_weighted_sums = torch.stack(
+                            [
+                                (sample * torch.arange(1, sample.numel() + 1, device=sample.device)).sum()
+                                for sample in input_samples
+                            ]
+                        )
+                    else:
+                        input_lengths = torch.full(
+                            (len(micro_batch),),
+                            input_ids.shape[-1],
+                            dtype=torch.int64,
+                            device=input_ids.device,
+                        )
+                        flat_input_ids = input_ids.reshape(len(micro_batch), -1).to(torch.int64)
+                        input_token_sums = flat_input_ids.sum(dim=-1)
+                        positions = torch.arange(
+                            1,
+                            flat_input_ids.shape[-1] + 1,
+                            device=flat_input_ids.device,
+                        )
+                        input_token_weighted_sums = (flat_input_ids * positions).sum(dim=-1)
+                    log_opd_tensor("micro_batch_input_lengths", input_lengths, **debug_metadata)
+                    log_opd_tensor("micro_batch_input_token_sums", input_token_sums, **debug_metadata)
+                    log_opd_tensor(
+                        "micro_batch_input_token_weighted_sums",
+                        input_token_weighted_sums,
+                        **debug_metadata,
+                    )
+
+                for field_name in (
+                    "pixel_values",
+                    "image_grid_thw",
+                    "pixel_values_videos",
+                    "video_grid_thw",
+                ):
+                    field_value = micro_batch.get(field_name, None)
+                    if isinstance(field_value, torch.Tensor):
+                        if field_value.is_nested:
+                            field_value = field_value.values()
+                        log_opd_tensor(
+                            f"micro_batch_{field_name}",
+                            field_value,
+                            **debug_metadata,
+                        )
+
             with ctx:
                 loss, meta_info = self.forward_step(micro_batch, loss_function=loss_function, forward_only=forward_only)
 
                 if not forward_only:
                     loss.backward()
+
+            if opd_debug_enabled():
+                log_opd_tensor("micro_batch_backward_loss", loss.detach(), **debug_metadata)
+                if not forward_only and debug_micro_grads:
+                    local_grad_sq_sum = torch.zeros((), device=get_device_id(), dtype=torch.float32)
+                    local_grad_sum = torch.zeros((), device=get_device_id(), dtype=torch.float32)
+                    local_grad_abs_sum = torch.zeros((), device=get_device_id(), dtype=torch.float32)
+                    for param in self.module.parameters():
+                        if param.grad is None:
+                            continue
+                        local_grad = param.grad.to_local() if isinstance(param.grad, DTensor) else param.grad
+                        local_grad_float = local_grad.detach().float()
+                        local_grad_sq_sum += local_grad_float.square().sum()
+                        local_grad_sum += local_grad_float.sum()
+                        local_grad_abs_sum += local_grad_float.abs().sum()
+                    log_opd_tensor(
+                        "micro_batch_cumulative_local_grad_sq_sum",
+                        local_grad_sq_sum,
+                        **debug_metadata,
+                    )
+                    log_opd_tensor(
+                        "micro_batch_cumulative_local_grad_sum",
+                        local_grad_sum,
+                        **debug_metadata,
+                    )
+                    log_opd_tensor(
+                        "micro_batch_cumulative_local_grad_abs_sum",
+                        local_grad_abs_sum,
+                        **debug_metadata,
+                    )
 
             output_lst.append(meta_info)
 

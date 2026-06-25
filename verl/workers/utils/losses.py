@@ -83,6 +83,10 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
 
     metrics = {}
 
+    opd_micro_batch_index = tu.get_non_tensor_data(data=data, key="opd_micro_batch_index", default=-1)
+    opd_num_micro_batches = tu.get_non_tensor_data(data=data, key="opd_num_micro_batches", default=-1)
+    local_micro_batch_size = len(data)
+
     # select fields and convert to padded tensor
     fields = ["response_mask", "old_log_probs", "advantages"]
     if "rollout_is_weights" in data:
@@ -110,6 +114,9 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
             "loss_mode": loss_mode,
             "response_mask_shape": tuple(response_mask.shape),
             "response_mask_sum": int(response_mask.sum().item()),
+            "micro_batch_index": opd_micro_batch_index,
+            "num_micro_batches": opd_num_micro_batches,
+            "local_micro_batch_size": local_micro_batch_size,
         }
 
         def debug_scalar(value):
@@ -159,6 +166,23 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
             debug_valid_tokens("ppo_loss_negative_approx_kl_valid", negative_approx_kl)
             debug_valid_tokens("ppo_loss_ratio_valid", ratio)
             debug_valid_tokens("ppo_loss_pg_losses_valid", pg_losses)
+            per_sample_valid_tokens = response_mask.sum(dim=-1)
+            per_sample_masked_sum = (pg_losses * response_mask).sum(dim=-1)
+            per_sample_log_prob_sum = (log_prob * response_mask).sum(dim=-1)
+            per_sample_old_log_prob_sum = (old_log_prob * response_mask).sum(dim=-1)
+            per_sample_advantage_sum = (advantages * response_mask).sum(dim=-1)
+            manual_masked_sum = per_sample_masked_sum.sum()
+            manual_token_mean_loss = (
+                manual_masked_sum / config.global_batch_info["batch_num_tokens"]
+                * config.global_batch_info["dp_size"]
+            )
+            log_opd_tensor("ppo_loss_valid_tokens_per_sample", per_sample_valid_tokens, **debug_metadata)
+            log_opd_tensor("ppo_loss_log_prob_sum_per_sample", per_sample_log_prob_sum, **debug_metadata)
+            log_opd_tensor("ppo_loss_old_log_prob_sum_per_sample", per_sample_old_log_prob_sum, **debug_metadata)
+            log_opd_tensor("ppo_loss_advantage_sum_per_sample", per_sample_advantage_sum, **debug_metadata)
+            log_opd_tensor("ppo_loss_masked_sum_per_sample", per_sample_masked_sum, **debug_metadata)
+            log_opd_tensor("ppo_loss_manual_masked_sum", manual_masked_sum, **debug_metadata)
+            log_opd_tensor("ppo_loss_manual_token_mean_loss", manual_token_mean_loss, **debug_metadata)
 
     policy_loss_fn = get_policy_loss_fn(loss_mode)
     pg_loss, pg_metrics = policy_loss_fn(
@@ -189,6 +213,15 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
         entropy_coeff = config.entropy_coeff
         policy_loss -= entropy_coeff * entropy_loss
         metrics["actor/entropy_loss"] = Metric(value=entropy_loss, aggregation=metric_aggregation)
+        if debug_enabled:
+            log_opd_tensor("ppo_loss_entropy_sum_per_sample", (entropy * response_mask).sum(dim=-1), **debug_metadata)
+            log_opd_tensor("ppo_loss_entropy_scalar", entropy_loss.detach(), **debug_metadata)
+            log_opd_tensor(
+                "ppo_loss_entropy_contribution",
+                (-entropy_coeff * entropy_loss).detach(),
+                entropy_coeff=entropy_coeff,
+                **debug_metadata,
+            )
 
     # add kl loss
     if config.use_kl_loss:
@@ -202,6 +235,18 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
         policy_loss += kl_loss * config.kl_loss_coef
         metrics["kl_loss"] = Metric(value=kl_loss, aggregation=metric_aggregation)
         metrics["kl_coef"] = config.kl_loss_coef
+        if debug_enabled:
+            log_opd_tensor("ppo_loss_kl_sum_per_sample", (kld * response_mask).sum(dim=-1), **debug_metadata)
+            log_opd_tensor("ppo_loss_kl_scalar", kl_loss.detach(), **debug_metadata)
+            log_opd_tensor(
+                "ppo_loss_kl_contribution",
+                (kl_loss * config.kl_loss_coef).detach(),
+                kl_loss_coef=config.kl_loss_coef,
+                **debug_metadata,
+            )
+
+    if debug_enabled:
+        log_opd_tensor("ppo_loss_policy_loss_scalar", policy_loss.detach(), **debug_metadata)
 
     return policy_loss, metrics
 

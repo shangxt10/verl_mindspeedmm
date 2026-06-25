@@ -237,6 +237,9 @@ def distillation_ppo_loss(
         policy_loss,
         distillation_loss_coef=distillation_loss_coef,
         use_task_rewards=distillation_loss_config.use_task_rewards,
+        micro_batch_index=tu.get_non_tensor_data(data=data, key="opd_micro_batch_index", default=-1),
+        num_micro_batches=tu.get_non_tensor_data(data=data, key="opd_num_micro_batches", default=-1),
+        local_micro_batch_size=len(data),
     )
     policy_metrics["distillation/loss"] = Metric(value=distill_loss, aggregation=AggregationType.SUM)
 
@@ -287,8 +290,31 @@ def distillation_loss(
 
     if opd_debug_enabled():
         response_mask_for_debug = response_mask.to_padded_tensor(False) if response_mask.is_nested else response_mask
-        log_opd_tensor("response_mask", response_mask_for_debug)
-        log_opd_tensor("masked_distillation_loss_sum", (distillation_losses * response_mask_for_debug).sum())
+        base_debug_metadata = {
+            "loss_mode": loss_config.loss_mode,
+            "loss_agg_mode": loss_agg_mode,
+            "micro_batch_index": tu.get_non_tensor_data(data=data, key="opd_micro_batch_index", default=-1),
+            "num_micro_batches": tu.get_non_tensor_data(data=data, key="opd_num_micro_batches", default=-1),
+            "local_micro_batch_size": len(data),
+            **loss_config.global_batch_info,
+        }
+        masked_distillation_losses = distillation_losses * response_mask_for_debug
+        log_opd_tensor("response_mask", response_mask_for_debug, **base_debug_metadata)
+        log_opd_tensor(
+            "distillation_valid_tokens_per_sample",
+            response_mask_for_debug.sum(dim=-1),
+            **base_debug_metadata,
+        )
+        log_opd_tensor(
+            "distillation_masked_sum_per_sample",
+            masked_distillation_losses.sum(dim=-1),
+            **base_debug_metadata,
+        )
+        log_opd_tensor(
+            "masked_distillation_loss_sum",
+            masked_distillation_losses.sum(),
+            **base_debug_metadata,
+        )
 
     if loss_config.use_policy_gradient:
         # Use negative distillation loss as reward, as done by https://thinkingmachines.ai/blog/on-policy-distillation/.
@@ -306,6 +332,9 @@ def distillation_loss(
                 "loss_agg_mode": loss_agg_mode,
                 "response_mask_shape": tuple(response_mask.shape),
                 "response_mask_sum": int(response_mask.sum().item()),
+                "micro_batch_index": tu.get_non_tensor_data(data=data, key="opd_micro_batch_index", default=-1),
+                "num_micro_batches": tu.get_non_tensor_data(data=data, key="opd_num_micro_batches", default=-1),
+                "local_micro_batch_size": len(data),
                 **loss_config.global_batch_info,
             }
 
@@ -345,10 +374,14 @@ def distillation_loss(
                     manual_masked_sum / loss_config.global_batch_info["batch_num_tokens"]
                     * loss_config.global_batch_info["dp_size"]
                 )
+                per_sample_valid_tokens = response_mask.sum(dim=-1)
+                per_sample_masked_sum = (pg_losses * response_mask).sum(dim=-1)
 
                 debug_valid_tokens("distill_pg_negative_approx_kl_valid", negative_approx_kl)
                 debug_valid_tokens("distill_pg_ratio_valid", ratio)
                 debug_valid_tokens("distill_pg_pg_losses_valid", pg_losses)
+                log_opd_tensor("distill_pg_valid_tokens_per_sample", per_sample_valid_tokens, **debug_metadata)
+                log_opd_tensor("distill_pg_masked_sum_per_sample", per_sample_masked_sum, **debug_metadata)
                 log_opd_tensor("distill_pg_manual_masked_sum", manual_masked_sum, **debug_metadata)
                 log_opd_tensor("distill_pg_manual_token_mean_loss", manual_token_mean_loss, **debug_metadata)
 

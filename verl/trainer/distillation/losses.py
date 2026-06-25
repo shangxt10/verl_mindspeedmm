@@ -20,6 +20,7 @@ from tensordict import TensorDict
 
 from verl.base_config import BaseConfig
 from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
+from verl.utils import tensordict_utils as tu
 from verl.utils.metric import AggregationType, Metric
 from verl.utils.opd_debug import log_opd_tensor, opd_debug_enabled
 from verl.workers.config import ActorConfig, DistillationConfig, DistillationLossConfig

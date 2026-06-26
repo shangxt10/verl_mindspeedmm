@@ -1299,6 +1299,74 @@ class FSDPEngineWithLMHead(FSDPEngine):
 
             if pad_mode == DatasetPadMode.NO_PADDING:
                 cu_seqlens = input_ids.offsets()
+                if os.getenv("MINDSPEED_MM_OPD_DEBUG", "0").lower() in {"1", "true", "yes", "on"}:
+                    from verl.utils.opd_debug import log_opd_tensor
+
+                    debug_metadata = {
+                        "micro_batch_index": tu.get_non_tensor_data(
+                            data=micro_batch, key="opd_micro_batch_index", default=-1
+                        ),
+                        "num_micro_batches": tu.get_non_tensor_data(
+                            data=micro_batch, key="opd_num_micro_batches", default=-1
+                        ),
+                        "local_micro_batch_size": len(micro_batch),
+                        "dp_size": self.get_data_parallel_size(),
+                        "dp_rank": self.get_data_parallel_rank(),
+                        "cp_size": self.ulysses_sequence_parallel_size,
+                        "use_remove_padding": use_remove_padding,
+                        "use_fused_kernels": use_fused_kernels,
+                        "module_training": self.module.training,
+                    }
+                    seq_lens = cu_seqlens.diff()
+                    log_opd_tensor("actor_forward_cu_seqlens", cu_seqlens, **debug_metadata)
+                    log_opd_tensor("actor_forward_input_lengths", seq_lens, **debug_metadata)
+
+                    if log_probs.shape[0] == cu_seqlens[-1].item():
+                        per_sample_log_prob_sum = torch.stack(
+                            [log_probs[start:end].sum() for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])]
+                        )
+                        per_sample_label_sum = torch.stack(
+                            [
+                                input_ids_rmpad_rolled[start:end].to(torch.int64).sum()
+                                for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])
+                            ]
+                        )
+                        per_sample_label_weighted_sum = torch.stack(
+                            [
+                                (
+                                    input_ids_rmpad_rolled[start:end].to(torch.int64)
+                                    * torch.arange(
+                                        1,
+                                        end.item() - start.item() + 1,
+                                        device=input_ids_rmpad_rolled.device,
+                                    )
+                                ).sum()
+                                for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])
+                            ]
+                        )
+                        per_sample_temperature_sum = torch.stack(
+                            [temperature_rmpad[start:end].sum() for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])]
+                        )
+                        log_opd_tensor(
+                            "actor_forward_log_prob_sum_per_input_sample",
+                            per_sample_log_prob_sum,
+                            **debug_metadata,
+                        )
+                        log_opd_tensor(
+                            "actor_forward_label_sum_per_input_sample",
+                            per_sample_label_sum,
+                            **debug_metadata,
+                        )
+                        log_opd_tensor(
+                            "actor_forward_label_weighted_sum_per_input_sample",
+                            per_sample_label_weighted_sum,
+                            **debug_metadata,
+                        )
+                        log_opd_tensor(
+                            "actor_forward_temperature_sum_per_input_sample",
+                            per_sample_temperature_sum,
+                            **debug_metadata,
+                        )
                 # (bsz, j1), for each sample, is the length of each sample: [real_prompt length + real_response length]
                 log_probs = torch.nested.nested_tensor_from_jagged(log_probs, cu_seqlens)
                 if calculate_entropy:

@@ -1347,6 +1347,15 @@ class FSDPEngineWithLMHead(FSDPEngine):
                         per_sample_log_prob_sum = torch.stack(
                             [log_probs[start:end].sum() for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])]
                         )
+                        per_sample_log_prob_sum_without_last = torch.stack(
+                            [
+                                log_probs[start : end - 1].sum() if end - start > 1 else log_probs[start:end].sum()
+                                for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])
+                            ]
+                        )
+                        per_sample_boundary_last_log_prob = torch.stack(
+                            [log_probs[end - 1] for end in cu_seqlens[1:]]
+                        )
                         per_sample_label_sum = torch.stack(
                             [
                                 input_ids_rmpad_rolled[start:end].to(torch.int64).sum()
@@ -1369,11 +1378,41 @@ class FSDPEngineWithLMHead(FSDPEngine):
                         per_sample_temperature_sum = torch.stack(
                             [temperature_rmpad[start:end].sum() for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])]
                         )
+                        responses = micro_batch.get("responses", None)
+                        if responses is not None:
+                            response_lens = responses.offsets().diff() if responses.is_nested else responses.shape[1]
+                            if isinstance(response_lens, torch.Tensor):
+                                per_sample_response_log_prob_sum = torch.stack(
+                                    [
+                                        log_probs[end - resp_len - 1 : end - 1].sum()
+                                        for resp_len, end in zip(response_lens, cu_seqlens[1:])
+                                    ]
+                                )
+                            else:
+                                per_sample_response_log_prob_sum = torch.stack(
+                                    [log_probs[end - response_lens - 1 : end - 1].sum() for end in cu_seqlens[1:]]
+                                )
                         log_opd_tensor(
                             "actor_forward_log_prob_sum_per_input_sample",
                             per_sample_log_prob_sum,
                             **debug_metadata,
                         )
+                        log_opd_tensor(
+                            "actor_forward_log_prob_sum_without_last_per_input_sample",
+                            per_sample_log_prob_sum_without_last,
+                            **debug_metadata,
+                        )
+                        log_opd_tensor(
+                            "actor_forward_boundary_last_log_prob_per_input_sample",
+                            per_sample_boundary_last_log_prob,
+                            **debug_metadata,
+                        )
+                        if responses is not None:
+                            log_opd_tensor(
+                                "actor_forward_response_log_prob_sum_per_sample",
+                                per_sample_response_log_prob_sum,
+                                **debug_metadata,
+                            )
                         log_opd_tensor(
                             "actor_forward_label_sum_per_input_sample",
                             per_sample_label_sum,

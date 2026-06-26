@@ -1138,6 +1138,7 @@ class FSDPEngineWithLMHead(FSDPEngine):
                 "input_ids": input_ids_rmpad,
                 "attention_mask": None,
                 "position_ids": position_ids_rmpad,
+                "cu_seqlens": input_ids.offsets().to(dtype=torch.int32),
             }
             if os.getenv("MINDSPEED_MM_OPD_DEBUG", "0").lower() in {"1", "true", "yes", "on"}:
                 from verl.utils.opd_debug import log_opd_tensor

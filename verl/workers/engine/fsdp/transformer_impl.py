@@ -1139,6 +1139,27 @@ class FSDPEngineWithLMHead(FSDPEngine):
                 "attention_mask": None,
                 "position_ids": position_ids_rmpad,
             }
+            if os.getenv("MINDSPEED_MM_OPD_DEBUG", "0").lower() in {"1", "true", "yes", "on"}:
+                from verl.utils.opd_debug import log_opd_tensor
+
+                debug_metadata = {
+                    "micro_batch_index": tu.get_non_tensor_data(
+                        data=micro_batch, key="opd_micro_batch_index", default=-1
+                    ),
+                    "num_micro_batches": tu.get_non_tensor_data(
+                        data=micro_batch, key="opd_num_micro_batches", default=-1
+                    ),
+                    "local_micro_batch_size": len(micro_batch),
+                    "dp_size": self.get_data_parallel_size(),
+                    "dp_rank": self.get_data_parallel_rank(),
+                    "cp_size": self.ulysses_sequence_parallel_size,
+                    "use_remove_padding": use_remove_padding,
+                    "input_ids_rmpad_shape": tuple(input_ids_rmpad.shape),
+                    "position_ids_rmpad_shape": tuple(position_ids_rmpad.shape),
+                    "model_input_keys": tuple(model_inputs.keys()),
+                    "has_model_input_cu_seqlens": "cu_seqlens" in model_inputs,
+                }
+                log_opd_tensor("actor_model_input_expected_cu_seqlens", input_ids.offsets(), **debug_metadata)
 
         else:
             if pad_mode == DatasetPadMode.NO_PADDING:

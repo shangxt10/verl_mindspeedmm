@@ -1378,9 +1378,13 @@ class FSDPEngineWithLMHead(FSDPEngine):
                         per_sample_temperature_sum = torch.stack(
                             [temperature_rmpad[start:end].sum() for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])]
                         )
-                        responses = micro_batch.get("responses", None)
-                        if responses is not None:
-                            response_lens = responses.offsets().diff() if responses.is_nested else responses.shape[1]
+                        response_mask = micro_batch.get("response_mask", None)
+                        if response_mask is not None:
+                            response_lens = (
+                                response_mask.offsets().diff()
+                                if response_mask.is_nested
+                                else response_mask.sum(dim=-1)
+                            ).to(device=cu_seqlens.device, dtype=torch.long)
                             if isinstance(response_lens, torch.Tensor):
                                 per_sample_response_log_prob_sum = torch.stack(
                                     [
@@ -1407,7 +1411,12 @@ class FSDPEngineWithLMHead(FSDPEngine):
                             per_sample_boundary_last_log_prob,
                             **debug_metadata,
                         )
-                        if responses is not None:
+                        if response_mask is not None:
+                            log_opd_tensor(
+                                "actor_forward_response_lens_for_debug",
+                                response_lens,
+                                **debug_metadata,
+                            )
                             log_opd_tensor(
                                 "actor_forward_response_log_prob_sum_per_sample",
                                 per_sample_response_log_prob_sum,

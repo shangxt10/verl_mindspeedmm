@@ -1343,7 +1343,13 @@ class FSDPEngineWithLMHead(FSDPEngine):
                     log_opd_tensor("actor_forward_cu_seqlens", cu_seqlens, **debug_metadata)
                     log_opd_tensor("actor_forward_input_lengths", seq_lens, **debug_metadata)
 
-                    if log_probs.shape[0] == cu_seqlens[-1].item():
+                    full_seq_len = cu_seqlens[-1].item()
+                    has_full_debug_tensors = (
+                        log_probs.shape[0] == full_seq_len
+                        and input_ids_rmpad_rolled.shape[0] == full_seq_len
+                        and temperature_rmpad.shape[0] == full_seq_len
+                    )
+                    if has_full_debug_tensors:
                         per_sample_log_prob_sum = torch.stack(
                             [log_probs[start:end].sum() for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])]
                         )

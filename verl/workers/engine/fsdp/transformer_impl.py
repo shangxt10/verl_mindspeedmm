@@ -1096,6 +1096,9 @@ class FSDPEngineWithLMHead(FSDPEngine):
 
             # for compute the log_prob
             input_ids_rmpad_rolled = torch.roll(input_ids_rmpad, shifts=-1, dims=1)  # (1, total_nnz)
+            if os.getenv("MINDSPEED_MM_OPD_DEBUG", "0").lower() in {"1", "true", "yes", "on"}:
+                output_args["input_ids_rmpad_rolled_full_for_debug"] = input_ids_rmpad_rolled.squeeze(0).detach()
+                output_args["temperature_rmpad_full_for_debug"] = temperature_rmpad.squeeze(0).detach()
 
             # pad and slice the inputs if sp > 1
             if self.use_ulysses_sp:
@@ -1344,10 +1347,16 @@ class FSDPEngineWithLMHead(FSDPEngine):
                     log_opd_tensor("actor_forward_input_lengths", seq_lens, **debug_metadata)
 
                     full_seq_len = cu_seqlens[-1].item()
+                    input_ids_rmpad_rolled_for_debug = output_args.get(
+                        "input_ids_rmpad_rolled_full_for_debug", input_ids_rmpad_rolled
+                    )
+                    temperature_rmpad_for_debug = output_args.get(
+                        "temperature_rmpad_full_for_debug", temperature_rmpad
+                    )
                     has_full_debug_tensors = (
                         log_probs.shape[0] == full_seq_len
-                        and input_ids_rmpad_rolled.shape[0] == full_seq_len
-                        and temperature_rmpad.shape[0] == full_seq_len
+                        and input_ids_rmpad_rolled_for_debug.shape[0] == full_seq_len
+                        and temperature_rmpad_for_debug.shape[0] == full_seq_len
                     )
                     if has_full_debug_tensors:
                         per_sample_log_prob_sum = torch.stack(
@@ -1364,25 +1373,28 @@ class FSDPEngineWithLMHead(FSDPEngine):
                         )
                         per_sample_label_sum = torch.stack(
                             [
-                                input_ids_rmpad_rolled[start:end].to(torch.int64).sum()
+                                input_ids_rmpad_rolled_for_debug[start:end].to(torch.int64).sum()
                                 for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])
                             ]
                         )
                         per_sample_label_weighted_sum = torch.stack(
                             [
                                 (
-                                    input_ids_rmpad_rolled[start:end].to(torch.int64)
+                                    input_ids_rmpad_rolled_for_debug[start:end].to(torch.int64)
                                     * torch.arange(
                                         1,
                                         end.item() - start.item() + 1,
-                                        device=input_ids_rmpad_rolled.device,
+                                        device=input_ids_rmpad_rolled_for_debug.device,
                                     )
                                 ).sum()
                                 for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])
                             ]
                         )
                         per_sample_temperature_sum = torch.stack(
-                            [temperature_rmpad[start:end].sum() for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])]
+                            [
+                                temperature_rmpad_for_debug[start:end].sum()
+                                for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])
+                            ]
                         )
                         response_mask = micro_batch.get("response_mask", None)
                         if response_mask is not None:
@@ -1441,6 +1453,21 @@ class FSDPEngineWithLMHead(FSDPEngine):
                         log_opd_tensor(
                             "actor_forward_temperature_sum_per_input_sample",
                             per_sample_temperature_sum,
+                            **debug_metadata,
+                        )
+                    else:
+                        log_opd_tensor(
+                            "actor_forward_full_debug_tensor_lengths",
+                            torch.tensor(
+                                [
+                                    log_probs.shape[0],
+                                    input_ids_rmpad_rolled_for_debug.shape[0],
+                                    temperature_rmpad_for_debug.shape[0],
+                                    full_seq_len,
+                                ],
+                                device=log_probs.device,
+                                dtype=torch.long,
+                            ),
                             **debug_metadata,
                         )
                 # (bsz, j1), for each sample, is the length of each sample: [real_prompt length + real_response length]

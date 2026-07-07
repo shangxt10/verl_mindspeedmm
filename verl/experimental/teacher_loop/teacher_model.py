@@ -20,6 +20,7 @@ from omegaconf import DictConfig
 
 from verl.single_controller.ray.base import RayResourcePool, split_resource_pool
 from verl.utils.config import omega_conf_to_dataclass
+from verl.utils.device import is_torch_npu_available
 from verl.utils.ray_utils import auto_await
 from verl.workers.config import DistillationConfig, DistillationTeacherModelConfig, HFModelConfig
 from verl.workers.rollout.replica import get_rollout_replica_class
@@ -63,6 +64,16 @@ class TeacherModelManager:
         per_replica_world_size = teacher_model_config.per_replica_world_size
         num_replicas = teacher_model_config.num_replicas
         expected_pool_size = num_replicas * per_replica_world_size
+        if (
+            self.distillation_config.colocate_with_actor_rollout
+            and teacher_model_config.inference.name == "vllm"
+            and is_torch_npu_available(check_device=False)
+        ):
+            raise ValueError(
+                "vLLM teacher colocated with actor/rollout requires sleep(level=2) to release weights, "
+                "but vLLM Ascend does not support sleep level 2. Use SGLang teacher inference or disable "
+                "distillation.colocate_with_actor_rollout."
+            )
         if self.resource_pool.world_size != expected_pool_size:
             raise ValueError(
                 f"Teacher {teacher_model_config.key!r} expected sub-pool of size "
@@ -149,6 +160,22 @@ class TeacherModelManager:
             server_actor_ids=self.server_addresses,
         )
 
+    async def _sleep_replicas(self):
+        await asyncio.gather(*[replica.sleep() for replica in self.rollout_replicas])
+
+    @auto_await
+    async def sleep_replicas(self):
+        """Sleep all teacher replicas to release inference engine device memory."""
+        await self._sleep_replicas()
+
+    async def _wake_up_replicas(self):
+        await asyncio.gather(*[replica.wake_up() for replica in self.rollout_replicas])
+
+    @auto_await
+    async def wake_up_replicas(self):
+        """Wake up all teacher replicas before serving distillation logprob requests."""
+        await self._wake_up_replicas()
+
 
 class MultiTeacherModelManager:
     """Manages one inner `TeacherModelManager` per teacher model, keyed by each teacher's `key`."""
@@ -191,3 +218,13 @@ class MultiTeacherModelManager:
             self.server_addresses[key] = manager.server_addresses
             self.server_handles[key] = manager.server_handles
             self.load_balancer_handle[key] = manager.load_balancer_handle
+
+    @auto_await
+    async def sleep_replicas(self):
+        """Sleep all teacher model replicas."""
+        await asyncio.gather(*[manager._sleep_replicas() for manager in self.teacher_model_managers.values()])
+
+    @auto_await
+    async def wake_up_replicas(self):
+        """Wake up all teacher model replicas."""
+        await asyncio.gather(*[manager._wake_up_replicas() for manager in self.teacher_model_managers.values()])

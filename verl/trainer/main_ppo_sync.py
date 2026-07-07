@@ -521,6 +521,23 @@ class PPOTrainer:
         self._init_tokenizer()
         self._init_dataloader()
 
+    def _is_teacher_colocated_with_actor_rollout(self) -> bool:
+        teacher_model_manager = getattr(self, "teacher_model_manager", None)
+        distillation_config = getattr(self, "distillation_config", None)
+        return (
+            teacher_model_manager is not None
+            and distillation_config is not None
+            and distillation_config.colocate_with_actor_rollout
+        )
+
+    def _sleep_colocated_teacher_replicas(self):
+        if self._is_teacher_colocated_with_actor_rollout():
+            self.teacher_model_manager.sleep_replicas()
+
+    def _wake_up_colocated_teacher_replicas(self):
+        if self._is_teacher_colocated_with_actor_rollout():
+            self.teacher_model_manager.wake_up_replicas()
+
     def _init_tokenizer(self):
         """Initialize tokenizer."""
         # Download the checkpoint from HDFS to the local machine.
@@ -693,11 +710,12 @@ class PPOTrainer:
         # 8. initialize teacher loop manager
         if self.use_teacher_policy:
             teacher_resource_pool = self.resource_pool_manager.get_resource_pool(Role.TeacherModel)
+            self.distillation_config: DistillationConfig = omega_conf_to_dataclass(self.config.distillation)
             self.teacher_model_manager = MultiTeacherModelManager(
                 config=self.config,
                 resource_pool=teacher_resource_pool,
             )
-            self.distillation_config: DistillationConfig = omega_conf_to_dataclass(self.config.distillation)
+            self._sleep_colocated_teacher_replicas()
         else:
             self.teacher_model_manager = None
             self.distillation_config = None
@@ -1575,6 +1593,8 @@ class PPOTrainer:
         batch_dict["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch_dict["raw_prompt"]))], dtype=object)
         batch = tu.get_tensordict(batch_dict)
         tu.assign_non_tensor_data(batch, "global_steps", self.global_steps)
+        with marked_timer("wake_teacher", timing_raw, color="purple"):
+            self._wake_up_colocated_teacher_replicas()
         self.async_rollout_manager.generate_sequences(batch)
 
         # 2. sample batch from replay buffer
@@ -1582,6 +1602,8 @@ class PPOTrainer:
             batch = self.replay_buffer.sample(partition_id="train", global_steps=self.global_steps)
         batch.extra_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
         self.checkpoint_manager.sleep_replicas()
+        with marked_timer("sleep_teacher", timing_raw, color="purple"):
+            self._sleep_colocated_teacher_replicas()
 
         # 3. [OPTIONAL] compute reward score with colocated reward model
         if self.reward_loop_manager.reward_loop_worker_handles is None:
@@ -1672,17 +1694,36 @@ class TaskRunner:
             self.mapping[Role.RewardModel] = "global_pool"
 
         distillation_config = config.get("distillation")
+        max_colocate_count = 3
         if is_distillation_enabled(distillation_config):
             if distillation_config.n_gpus_per_node <= 0:
                 raise ValueError("config.distillation.n_gpus_per_node must be greater than 0")
             if distillation_config.nnodes <= 0:
                 raise ValueError("config.distillation.nnodes must be greater than 0")
 
-            teacher_pool = [distillation_config.n_gpus_per_node] * distillation_config.nnodes
-            resource_pool_spec["teacher_pool"] = teacher_pool
-            self.mapping[Role.TeacherModel] = "teacher_pool"
+            if distillation_config.get("colocate_with_actor_rollout", False):
+                if distillation_config.n_gpus_per_node != config.trainer.n_gpus_per_node:
+                    raise ValueError(
+                        "When distillation.colocate_with_actor_rollout=True, "
+                        "config.distillation.n_gpus_per_node must equal config.trainer.n_gpus_per_node."
+                    )
+                if distillation_config.nnodes != config.trainer.nnodes:
+                    raise ValueError(
+                        "When distillation.colocate_with_actor_rollout=True, "
+                        "config.distillation.nnodes must equal config.trainer.nnodes."
+                    )
+                max_colocate_count = 4
+                self.mapping[Role.TeacherModel] = "global_pool"
+            else:
+                teacher_pool = [distillation_config.n_gpus_per_node] * distillation_config.nnodes
+                resource_pool_spec["teacher_pool"] = teacher_pool
+                self.mapping[Role.TeacherModel] = "teacher_pool"
 
-        self.resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=self.mapping)
+        self.resource_pool_manager = ResourcePoolManager(
+            resource_pool_spec=resource_pool_spec,
+            mapping=self.mapping,
+            max_colocate_count=max_colocate_count,
+        )
 
     def run(self, config):
         pprint(OmegaConf.to_container(config, resolve=True))

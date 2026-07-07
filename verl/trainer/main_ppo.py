@@ -174,18 +174,36 @@ class TaskRunner:
             config.reward.reward_model.n_gpus_per_node = config.trainer.n_gpus_per_node
 
         distillation_config = config.get("distillation")
+        max_colocate_count = 3
         if is_distillation_enabled(distillation_config):
             if distillation_config.n_gpus_per_node <= 0:
                 raise ValueError("config.distillation.n_gpus_per_node must be greater than 0")
             if distillation_config.nnodes <= 0:
                 raise ValueError("config.distillation.nnodes must be greater than 0")
 
-            teacher_pool = [distillation_config.n_gpus_per_node] * distillation_config.nnodes
-            resource_pool_spec["teacher_pool"] = teacher_pool
+            if distillation_config.get("colocate_with_actor_rollout", False):
+                if distillation_config.n_gpus_per_node != config.trainer.n_gpus_per_node:
+                    raise ValueError(
+                        "When distillation.colocate_with_actor_rollout=True, "
+                        "config.distillation.n_gpus_per_node must equal config.trainer.n_gpus_per_node."
+                    )
+                if distillation_config.nnodes != config.trainer.nnodes:
+                    raise ValueError(
+                        "When distillation.colocate_with_actor_rollout=True, "
+                        "config.distillation.nnodes must equal config.trainer.nnodes."
+                    )
+                max_colocate_count = 4
+            else:
+                teacher_pool = [distillation_config.n_gpus_per_node] * distillation_config.nnodes
+                resource_pool_spec["teacher_pool"] = teacher_pool
 
         from verl.trainer.ppo.ray_trainer import ResourcePoolManager
 
-        resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=self.mapping)
+        resource_pool_manager = ResourcePoolManager(
+            resource_pool_spec=resource_pool_spec,
+            mapping=self.mapping,
+            max_colocate_count=max_colocate_count,
+        )
         return resource_pool_manager
 
     def add_reward_model_resource_pool(self, config):
@@ -207,7 +225,10 @@ class TaskRunner:
         if is_distillation_enabled(config.get("distillation")):
             # we do not use teacher model workers, so we only register teacher model in resource pool
             # without registering a teacher model worker in role-worker mapping
-            self.mapping[Role.TeacherModel] = "teacher_pool"
+            if config.distillation.get("colocate_with_actor_rollout", False):
+                self.mapping[Role.TeacherModel] = "global_pool"
+            else:
+                self.mapping[Role.TeacherModel] = "teacher_pool"
 
     def add_ref_policy_worker(self, config, ref_policy_cls):
         """Ref policy is fused into ActorRolloutRefWorker in the unified model engine.

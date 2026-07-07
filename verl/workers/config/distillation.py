@@ -212,6 +212,9 @@ class DistillationConfig(BaseConfig):
 
     enabled (bool):
         Whether on-policy distillation is enabled.
+    colocate_with_actor_rollout (bool):
+        Whether to place teacher inference replicas on the same resource pool as
+        the student actor/rollout workers.
     n_gpus_per_node (int):
         Number of GPUs per node in the teacher resource pool.
     nnodes (int):
@@ -248,6 +251,7 @@ class DistillationConfig(BaseConfig):
     _mutable_fields = BaseConfig._mutable_fields | {"teacher_models", "n_gpus_per_node", "nnodes"}
 
     enabled: bool = False
+    colocate_with_actor_rollout: bool = False
     n_gpus_per_node: int = 0
     nnodes: int = 0
     teacher_models: dict[str, DistillationTeacherModelConfig] = field(default_factory=dict)

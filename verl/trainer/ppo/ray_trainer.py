@@ -318,6 +318,23 @@ class RayPPOTrainer:
 
         self.checkpoint_manager = None
 
+    def _is_teacher_colocated_with_actor_rollout(self) -> bool:
+        teacher_model_manager = getattr(self, "teacher_model_manager", None)
+        distillation_config = getattr(self, "distillation_config", None)
+        return (
+            teacher_model_manager is not None
+            and distillation_config is not None
+            and distillation_config.colocate_with_actor_rollout
+        )
+
+    def _sleep_colocated_teacher_replicas(self):
+        if self._is_teacher_colocated_with_actor_rollout():
+            self.teacher_model_manager.sleep_replicas()
+
+    def _wake_up_colocated_teacher_replicas(self):
+        if self._is_teacher_colocated_with_actor_rollout():
+            self.teacher_model_manager.wake_up_replicas()
+
     def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler: Optional[Sampler]):
         """
         Creates the train and validation dataloaders.
@@ -830,11 +847,12 @@ class RayPPOTrainer:
             from verl.experimental.teacher_loop import MultiTeacherModelManager
 
             teacher_resource_pool = self.resource_pool_manager.get_resource_pool(Role.TeacherModel)
+            self.distillation_config: DistillationConfig = omega_conf_to_dataclass(self.config.distillation)
             self.teacher_model_manager = MultiTeacherModelManager(
                 config=self.config,
                 resource_pool=teacher_resource_pool,
             )
-            self.distillation_config: DistillationConfig = omega_conf_to_dataclass(self.config.distillation)
+            self._sleep_colocated_teacher_replicas()
         else:
             self.teacher_model_manager = None
             self.distillation_config = None
@@ -1357,6 +1375,7 @@ class RayPPOTrainer:
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
+                        self._wake_up_colocated_teacher_replicas()
                         if curr_step_profile:
                             self.async_rollout_manager.start_profile()
                         gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
@@ -1376,6 +1395,7 @@ class RayPPOTrainer:
                                     flush=True,
                                 )
                         self.checkpoint_manager.sleep_replicas()
+                        self._sleep_colocated_teacher_replicas()
                         if curr_step_profile:
                             self.async_rollout_manager.stop_profile()
 
@@ -1386,10 +1406,12 @@ class RayPPOTrainer:
                         with marked_timer("gen_max", timing_raw, color="purple"):
                             gen_baseline_batch = deepcopy(gen_batch)
                             gen_baseline_batch.meta_info["do_sample"] = False
+                            self._wake_up_colocated_teacher_replicas()
                             if curr_step_profile:
                                 self.async_rollout_manager.start_profile()
                             gen_baseline_output = self.async_rollout_manager.generate_sequences(gen_baseline_batch)
                             self.checkpoint_manager.sleep_replicas()
+                            self._sleep_colocated_teacher_replicas()
                             if curr_step_profile:
                                 self.async_rollout_manager.stop_profile()
                             batch = batch.union(gen_baseline_output)

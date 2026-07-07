@@ -95,6 +95,7 @@ class vLLMHttpServer:
         gpus_per_node: int,
         nnodes: int,
         cuda_visible_devices: str,
+        is_teacher_model: bool = False,
     ):
         """
         Args:
@@ -106,6 +107,7 @@ class vLLMHttpServer:
             gpus_per_node (int): number of gpus per node.
             nnodes (int): number of nodes.
             cuda_visible_devices (str): cuda visible devices.
+            is_teacher_model (bool): whether this server is used as an OPD teacher model.
         """
         os.environ[get_visible_devices_keyword()] = cuda_visible_devices
         os.environ["VERL_REPLICA_RANK"] = str(replica_rank)
@@ -115,6 +117,7 @@ class vLLMHttpServer:
         self._validate_configs()
 
         self.rollout_mode = rollout_mode
+        self.is_teacher_model = is_teacher_model
         self.workers = workers
 
         self.replica_rank = replica_rank
@@ -573,7 +576,16 @@ class vLLMHttpServer:
         if self.rollout_mode == RolloutMode.HYBRID:
             await self._sleep_hybrid()
         elif self.rollout_mode == RolloutMode.COLOCATED:
-            await self.engine.sleep(level=1)
+            if self.is_teacher_model:
+                if is_torch_npu_available(check_device=False):
+                    raise NotImplementedError(
+                        "vLLM teacher colocated with actor/rollout requires sleep(level=2) to release weights, "
+                        "but vLLM Ascend does not support sleep level 2. Use SGLang teacher inference or disable "
+                        "distillation.colocate_with_actor_rollout."
+                    )
+                await self.engine.sleep(level=2)
+            else:
+                await self.engine.sleep(level=1)
         elif self.rollout_mode == RolloutMode.STANDALONE:
             logger.info("skip sleep in standalone mode")
 
@@ -948,6 +960,7 @@ class vLLMReplica(RolloutReplica):
                 gpus_per_node=gpus_per_replica_node,
                 nnodes=nnodes,
                 cuda_visible_devices=node_cuda_visible_devices,
+                is_teacher_model=self.is_teacher_model,
             )
             self.servers.append(server)
 

@@ -13,6 +13,9 @@ defaults:
 # Whether to enable distillation.
 enabled: false
 
+# Whether to place teacher inference replicas on the same GPUs as the student actor/rollout workers.
+colocate_with_actor_rollout: false
+
 # distillation loss config
 distillation_loss:
 

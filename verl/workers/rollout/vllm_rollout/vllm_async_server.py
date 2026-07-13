@@ -566,11 +566,18 @@ class vLLMHttpServer:
             # In hybrid mode, rollout is wake up in `update_weights`
             raise ValueError(f"wake_up not support rollout_mode {self.rollout_mode}")
         elif self.rollout_mode == RolloutMode.COLOCATED:
+            if self.is_teacher_model and self._get_teacher_sleep_level() <= 0:
+                logger.info("skip wake_up for vLLM teacher because teacher_sleep_level<=0")
+                return
             # Directly call engine to wake up without sync weights.
             await self.engine.wake_up(tags=self._get_wake_up_tags())
             await self.engine.reset_prefix_cache()
         elif self.rollout_mode == RolloutMode.STANDALONE:
             logger.info("skip wake_up in standalone mode")
+
+    def _get_teacher_sleep_level(self) -> int:
+        vllm_engine_kwargs = self.config.engine_kwargs.get("vllm", {})
+        return int(vllm_engine_kwargs.get("teacher_sleep_level", 2))
 
     async def sleep(self):
         if self.node_rank != 0 or not self.config.free_cache_engine:
@@ -580,16 +587,18 @@ class vLLMHttpServer:
             await self._sleep_hybrid()
         elif self.rollout_mode == RolloutMode.COLOCATED:
             if self.is_teacher_model:
-                vllm_engine_kwargs = self.config.engine_kwargs.get("vllm", {})
-                teacher_sleep_level = int(vllm_engine_kwargs.get("teacher_sleep_level", 2))
+                teacher_sleep_level = self._get_teacher_sleep_level()
+                if teacher_sleep_level <= 0:
+                    logger.info("skip sleep for vLLM teacher because teacher_sleep_level<=0")
+                    return
                 if is_torch_npu_available(check_device=False):
                     if teacher_sleep_level >= 2:
                         raise NotImplementedError(
                             "vLLM teacher colocated with actor/rollout requires sleep(level=2) to release weights, "
                             "but vLLM Ascend does not support sleep level 2. To use vLLM on NPU anyway, set "
-                            "+distillation.teacher_models.<teacher>.inference.engine_kwargs.vllm.teacher_sleep_level=1. "
-                            "This only releases vLLM cache memory, so the teacher weights remain resident and may OOM "
-                            "during student training."
+                            "+distillation.teacher_models.<teacher>.inference.engine_kwargs.vllm.teacher_sleep_level=1 "
+                            "to release cache only, or 0 to skip teacher sleep/wake completely. These modes keep "
+                            "teacher weights resident and may OOM during student training."
                         )
                 await self.engine.sleep(level=teacher_sleep_level)
             else:

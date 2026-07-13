@@ -23,6 +23,9 @@ VISIBLE_DEVICE_COUNT=$(awk -F',' '{print NF}' <<< "${ASCEND_RT_VISIBLE_DEVICES}"
 export VLLM_ATTENTION_BACKEND=ASCEND
 # original: VLLM_ASCEND_ENABLE_NZ=0
 export VLLM_ASCEND_ENABLE_NZ=0
+# Keep verl's vLLM-Ascend MoE compatibility patches enabled for Qwen3.5 MoE.
+export VERL_NPU_ENABLE_VLLM_ASCEND_MOE_WEIGHT_LOADER_PATCH=${VERL_NPU_ENABLE_VLLM_ASCEND_MOE_WEIGHT_LOADER_PATCH:-1}
+export VERL_NPU_ENABLE_A2_PATCH_VLLM_ASCEND_MC2=${VERL_NPU_ENABLE_A2_PATCH_VLLM_ASCEND_MC2:-1}
 STUDENT_MODEL=/home/s00525112/model/Qwen3.5-2B
 TEACHER_MODEL=/home/s00525112/model/Qwen3.5-35B-A3B
 DCP_MODEL_PATH="/home/s00525112/model/Qwen3.5-2B-dcp"
@@ -34,9 +37,10 @@ NNODES=${NNODES:-1}
 NGPUS_PER_NODE=${NGPUS_PER_NODE:-${VISIBLE_DEVICE_COUNT}}
 COLOCATE_WITH_ACTOR_ROLLOUT=${COLOCATE_WITH_ACTOR_ROLLOUT:-True}
 # vLLM/NPU currently cannot full-unload teacher weights with sleep(level=2).
-# teacher_sleep_level=1 keeps vLLM usable by releasing cache memory only.
+# teacher_sleep_level=0 keeps the teacher engine resident and skips vLLM sleep/wake;
+# use 1 to release cache memory only if your vLLM-Ascend stack is stable with it.
 ROLLOUT_BACKEND=${ROLLOUT_BACKEND:-vllm}
-VLLM_TEACHER_SLEEP_LEVEL=${VLLM_TEACHER_SLEEP_LEVEL:-1}
+VLLM_TEACHER_SLEEP_LEVEL=${VLLM_TEACHER_SLEEP_LEVEL:-0}
 
 case "${COLOCATE_WITH_ACTOR_ROLLOUT}" in
     True|true|1|yes|YES|on|ON)
@@ -45,9 +49,14 @@ case "${COLOCATE_WITH_ACTOR_ROLLOUT}" in
             echo "When COLOCATE_WITH_ACTOR_ROLLOUT=True, TEACHER_WORLD_SIZE must equal NGPUS_PER_NODE." >&2
             exit 1
         fi
-        if [ "${ROLLOUT_BACKEND}" = "vllm" ] && [ "${VLLM_TEACHER_SLEEP_LEVEL}" != "1" ]; then
-            echo "NPU vLLM teacher co-location requires VLLM_TEACHER_SLEEP_LEVEL=1 in this branch." >&2
-            exit 1
+        if [ "${ROLLOUT_BACKEND}" = "vllm" ]; then
+            case "${VLLM_TEACHER_SLEEP_LEVEL}" in
+                0|1) ;;
+                *)
+                    echo "NPU vLLM teacher co-location requires VLLM_TEACHER_SLEEP_LEVEL=0 or 1." >&2
+                    exit 1
+                    ;;
+            esac
         fi
         ;;
     *)

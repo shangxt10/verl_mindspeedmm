@@ -71,18 +71,20 @@ class TeacherModelManager:
         ):
             vllm_engine_kwargs = teacher_model_config.inference.engine_kwargs.get("vllm", {})
             teacher_sleep_level = int(vllm_engine_kwargs.get("teacher_sleep_level", 2))
+            if teacher_sleep_level < 0:
+                raise ValueError("teacher_sleep_level must be >= 0.")
             if teacher_sleep_level >= 2:
                 raise ValueError(
                     "vLLM teacher colocated with actor/rollout requires sleep(level=2) to release weights, "
                     "but vLLM Ascend does not support sleep level 2. To use vLLM on NPU anyway, set "
-                    "+distillation.teacher_models.<teacher>.inference.engine_kwargs.vllm.teacher_sleep_level=1. "
-                    "This only releases vLLM cache memory, so the teacher weights remain resident and may OOM "
-                    "during student training."
+                    "+distillation.teacher_models.<teacher>.inference.engine_kwargs.vllm.teacher_sleep_level=1 "
+                    "to release cache only, or 0 to skip teacher sleep/wake completely. These modes keep teacher "
+                    "weights resident and may OOM during student training."
                 )
             logger.warning(
                 "Using vLLM teacher co-location on NPU with teacher_sleep_level=%s. "
-                "Teacher weights remain resident between OPD phases; reduce teacher/rollout memory settings "
-                "or disable co-location if student training OOMs.",
+                "Teacher weights remain resident between OPD phases; level 0 also skips vLLM sleep/wake entirely. "
+                "Reduce teacher/rollout memory settings or disable co-location if student training OOMs.",
                 teacher_sleep_level,
             )
         if self.resource_pool.world_size != expected_pool_size:

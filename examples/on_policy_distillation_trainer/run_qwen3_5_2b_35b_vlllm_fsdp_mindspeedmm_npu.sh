@@ -212,7 +212,9 @@ EXTRA=(
     distillation.distillation_loss.use_policy_gradient=${use_policy_gradient}
     distillation.distillation_loss.loss_max_clamp=10.0
     distillation.distillation_loss.log_prob_min_clamp=-10.0
-    distillation.teacher_models.teacher_model.inference.enforce_eager=False
+    distillation.teacher_models.teacher_model.inference.enforce_eager=True
+    distillation.teacher_models.teacher_model.inference.enable_chunked_prefill=False
+    distillation.teacher_models.teacher_model.inference.enable_prefix_caching=False
     distillation.teacher_models.teacher_model.inference.max_num_seqs=16
 )
 

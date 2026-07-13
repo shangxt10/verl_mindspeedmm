@@ -20,9 +20,9 @@ export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3}
 export VLLM_ATTENTION_BACKEND=ASCEND
 # original: VLLM_ASCEND_ENABLE_NZ=0
 export VLLM_ASCEND_ENABLE_NZ=0
-STUDENT_MODEL=/path/to/model/Qwen3.5-2B
-TEACHER_MODEL=/path/to/model/Qwen3.5-35B-A3B
-DCP_MODEL_PATH="/path/to/model/Qwen3.5-2B-dcp"
+STUDENT_MODEL=/home/s00525112/model/Qwen3.5-2B
+TEACHER_MODEL=/home/s00525112/model/Qwen3.5-35B-A3B
+DCP_MODEL_PATH="/home/s00525112/model/Qwen3.5-2B-dcp"
 sp_size=1
 
 # export ASCEND_LAUNCH_BLOCKING=1
@@ -85,8 +85,8 @@ project_name=${PROJECT_NAME:-verl_distill_gsm8k}
 experiment_name=${EXPERIMENT_NAME:-qwen35_2b_from_qwen35_35b_mm_fsdp2}
 # ---- end user-adjustable ----
 
-train_data=/path/to/data/gsm8k/train.parquet
-test_data=/path/to/data/gsm8k/test.parquet
+train_data=/home/s00525112/data/gsm8k/train.parquet
+test_data=/home/s00525112/data/gsm8k/test.parquet
 
 train_files="['$train_data']"
 val_files="['$test_data']"

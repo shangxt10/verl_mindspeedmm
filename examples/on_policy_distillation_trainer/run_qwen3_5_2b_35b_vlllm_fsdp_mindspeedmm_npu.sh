@@ -23,8 +23,11 @@ VISIBLE_DEVICE_COUNT=$(awk -F',' '{print NF}' <<< "${ASCEND_RT_VISIBLE_DEVICES}"
 export VLLM_ATTENTION_BACKEND=ASCEND
 # original: VLLM_ASCEND_ENABLE_NZ=0
 export VLLM_ASCEND_ENABLE_NZ=0
-# Keep verl's vLLM-Ascend MoE compatibility patches enabled for Qwen3.5 MoE.
-export VERL_NPU_ENABLE_VLLM_ASCEND_MOE_WEIGHT_LOADER_PATCH=${VERL_NPU_ENABLE_VLLM_ASCEND_MOE_WEIGHT_LOADER_PATCH:-1}
+# Keep verl's vLLM-Ascend A2 MC2 workaround enabled. The extended MoE weight
+# loader patch is opt-in because standalone vLLM-Ascend Qwen3.5 MoE can run
+# normally on some stacks, and the co-location issue is more likely lifecycle-
+# related than a universal fused-MoE loader issue.
+export VERL_NPU_ENABLE_VLLM_ASCEND_MOE_WEIGHT_LOADER_PATCH=${VERL_NPU_ENABLE_VLLM_ASCEND_MOE_WEIGHT_LOADER_PATCH:-0}
 export VERL_NPU_ENABLE_A2_PATCH_VLLM_ASCEND_MC2=${VERL_NPU_ENABLE_A2_PATCH_VLLM_ASCEND_MC2:-1}
 STUDENT_MODEL=/home/s00525112/model/Qwen3.5-2B
 TEACHER_MODEL=/home/s00525112/model/Qwen3.5-35B-A3B

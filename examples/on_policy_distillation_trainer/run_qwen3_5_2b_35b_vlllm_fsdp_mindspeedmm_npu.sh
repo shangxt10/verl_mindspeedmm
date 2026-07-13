@@ -77,7 +77,10 @@ rollout_tp=${ROLLOUT_TP:-2}
 # KV/cache allocation; model weights and student training peaks still need room.
 rollout_gpu_mem_util=${ROLLOUT_GPU_MEM_UTIL:-0.25}
 teacher_tp=${TEACHER_TP:-${NGPUS_PER_NODE}}
-teacher_ep=${TEACHER_EP:-${NGPUS_PER_NODE}}
+# Keep vLLM-Ascend MoE expert parallel disabled by default for Qwen3.5-35B-A3B.
+# The EP path can hit fused MoE grouped-matmul shape mismatches on NPU; TP=8
+# still uses all 8 visible logical NPUs for the teacher replica.
+teacher_ep=${TEACHER_EP:-1}
 teacher_gpu_mem_util=${TEACHER_GPU_MEM_UTIL:-0.25}
 
 total_epochs=${TOTAL_EPOCHS:-15}

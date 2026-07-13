@@ -15,7 +15,10 @@ export MULTI_STREAM_MEMORY_REUSE=2
 export OMP_NUM_THREADS=1
 
 # ---- NPU env ----------------------------------------------------------------
-export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3}
+# 8 dies expose 16 logical NPUs on this machine. Use the first 4 dies by default:
+# die0=(0,1), die1=(2,3), die2=(4,5), die3=(6,7).
+export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+VISIBLE_DEVICE_COUNT=$(awk -F',' '{print NF}' <<< "${ASCEND_RT_VISIBLE_DEVICES}")
 # original: VLLM_ATTENTION_BACKEND=ASCEND
 export VLLM_ATTENTION_BACKEND=ASCEND
 # original: VLLM_ASCEND_ENABLE_NZ=0
@@ -28,7 +31,7 @@ sp_size=1
 # export ASCEND_LAUNCH_BLOCKING=1
 
 NNODES=${NNODES:-1}
-NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}
+NGPUS_PER_NODE=${NGPUS_PER_NODE:-${VISIBLE_DEVICE_COUNT}}
 COLOCATE_WITH_ACTOR_ROLLOUT=${COLOCATE_WITH_ACTOR_ROLLOUT:-True}
 # vLLM/NPU currently cannot full-unload teacher weights with sleep(level=2).
 # teacher_sleep_level=1 keeps vLLM usable by releasing cache memory only.
@@ -73,8 +76,8 @@ rollout_tp=${ROLLOUT_TP:-2}
 # Start conservatively for 8-card co-location. vLLM's utilization mostly caps
 # KV/cache allocation; model weights and student training peaks still need room.
 rollout_gpu_mem_util=${ROLLOUT_GPU_MEM_UTIL:-0.25}
-teacher_tp=${TEACHER_TP:-8}
-teacher_ep=${TEACHER_EP:-8}
+teacher_tp=${TEACHER_TP:-${NGPUS_PER_NODE}}
+teacher_ep=${TEACHER_EP:-${NGPUS_PER_NODE}}
 teacher_gpu_mem_util=${TEACHER_GPU_MEM_UTIL:-0.25}
 
 total_epochs=${TOTAL_EPOCHS:-15}

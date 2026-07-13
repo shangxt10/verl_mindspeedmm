@@ -577,13 +577,18 @@ class vLLMHttpServer:
             await self._sleep_hybrid()
         elif self.rollout_mode == RolloutMode.COLOCATED:
             if self.is_teacher_model:
+                vllm_engine_kwargs = self.config.engine_kwargs.get("vllm", {})
+                teacher_sleep_level = int(vllm_engine_kwargs.get("teacher_sleep_level", 2))
                 if is_torch_npu_available(check_device=False):
-                    raise NotImplementedError(
-                        "vLLM teacher colocated with actor/rollout requires sleep(level=2) to release weights, "
-                        "but vLLM Ascend does not support sleep level 2. Use SGLang teacher inference or disable "
-                        "distillation.colocate_with_actor_rollout."
-                    )
-                await self.engine.sleep(level=2)
+                    if teacher_sleep_level >= 2:
+                        raise NotImplementedError(
+                            "vLLM teacher colocated with actor/rollout requires sleep(level=2) to release weights, "
+                            "but vLLM Ascend does not support sleep level 2. To use vLLM on NPU anyway, set "
+                            "+distillation.teacher_models.<teacher>.inference.engine_kwargs.vllm.teacher_sleep_level=1. "
+                            "This only releases vLLM cache memory, so the teacher weights remain resident and may OOM "
+                            "during student training."
+                        )
+                await self.engine.sleep(level=teacher_sleep_level)
             else:
                 await self.engine.sleep(level=1)
         elif self.rollout_mode == RolloutMode.STANDALONE:

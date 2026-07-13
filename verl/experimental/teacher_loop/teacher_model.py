@@ -69,10 +69,21 @@ class TeacherModelManager:
             and teacher_model_config.inference.name == "vllm"
             and is_torch_npu_available(check_device=False)
         ):
-            raise ValueError(
-                "vLLM teacher colocated with actor/rollout requires sleep(level=2) to release weights, "
-                "but vLLM Ascend does not support sleep level 2. Use SGLang teacher inference or disable "
-                "distillation.colocate_with_actor_rollout."
+            vllm_engine_kwargs = teacher_model_config.inference.engine_kwargs.get("vllm", {})
+            teacher_sleep_level = int(vllm_engine_kwargs.get("teacher_sleep_level", 2))
+            if teacher_sleep_level >= 2:
+                raise ValueError(
+                    "vLLM teacher colocated with actor/rollout requires sleep(level=2) to release weights, "
+                    "but vLLM Ascend does not support sleep level 2. To use vLLM on NPU anyway, set "
+                    "+distillation.teacher_models.<teacher>.inference.engine_kwargs.vllm.teacher_sleep_level=1. "
+                    "This only releases vLLM cache memory, so the teacher weights remain resident and may OOM "
+                    "during student training."
+                )
+            logger.warning(
+                "Using vLLM teacher co-location on NPU with teacher_sleep_level=%s. "
+                "Teacher weights remain resident between OPD phases; reduce teacher/rollout memory settings "
+                "or disable co-location if student training OOMs.",
+                teacher_sleep_level,
             )
         if self.resource_pool.world_size != expected_pool_size:
             raise ValueError(

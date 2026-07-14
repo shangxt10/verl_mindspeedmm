@@ -88,6 +88,7 @@ rollout_tp=${ROLLOUT_TP:-2}
 # Start conservatively for 8-card co-location. vLLM's utilization mostly caps
 # KV/cache allocation; model weights and student training peaks still need room.
 rollout_gpu_mem_util=${ROLLOUT_GPU_MEM_UTIL:-0.25}
+rollout_max_num_seqs=${ROLLOUT_MAX_NUM_SEQS:-16}
 teacher_tp=${TEACHER_TP:-${NGPUS_PER_NODE}}
 # Keep vLLM-Ascend MoE expert parallel disabled by default for Qwen3.5-35B-A3B.
 # The EP path can hit fused MoE grouped-matmul shape mismatches on NPU; TP=8
@@ -101,6 +102,28 @@ test_freq=${TEST_FREQ:--1}
 
 project_name=${PROJECT_NAME:-verl_distill_gsm8k}
 experiment_name=${EXPERIMENT_NAME:-qwen35_2b_from_qwen35_35b_mm_fsdp2}
+start_time=$(date +%Y%m%d)_$(date +%H%M%S)
+
+# profiling configuration
+PROFILE_STEPS=${PROFILE_STEPS:-"[2]"}
+PROFILE_RANKS_ALL=${PROFILE_RANKS_ALL:-False}
+DISCRETE=${DISCRETE:-True}
+if [ -z "${PROFILE_RANKS+x}" ]; then
+    PROFILE_RANKS="["
+    for ((rank = 0; rank < NGPUS_PER_NODE; rank++)); do
+        if [ "$rank" -gt 0 ]; then
+            PROFILE_RANKS+=","
+        fi
+        PROFILE_RANKS+="$rank"
+    done
+    PROFILE_RANKS+="]"
+fi
+
+# profiling NPU options
+SAVE_PATH=${SAVE_PATH:-"./profile_data/${start_time}"}
+LEVEL=${LEVEL:-"level0"}
+CONTENTS=${CONTENTS:-"['npu','cpu','stack']"}
+ANALYSIS=${ANALYSIS:-True}
 # ---- end user-adjustable ----
 
 train_data=/home/s00525112/data/gsm8k/train.parquet
@@ -154,6 +177,7 @@ ROLLOUT=(
     actor_rollout_ref.rollout.dtype=bfloat16
     actor_rollout_ref.rollout.tensor_model_parallel_size=${rollout_tp}
     actor_rollout_ref.rollout.gpu_memory_utilization=${rollout_gpu_mem_util}
+    actor_rollout_ref.rollout.max_num_seqs=${rollout_max_num_seqs}
     actor_rollout_ref.rollout.enforce_eager=False
     actor_rollout_ref.rollout.n=1
     actor_rollout_ref.rollout.max_model_len=${max_num_tokens}
@@ -205,6 +229,26 @@ TRAINER=(
     trainer.total_training_steps=400
 )
 
+PROFILER=(
+    global_profiler.tool=npu
+    global_profiler.steps=${PROFILE_STEPS}
+    global_profiler.save_path=${SAVE_PATH}
+    actor_rollout_ref.actor.profiler.enable=True
+    actor_rollout_ref.actor.profiler.ranks=${PROFILE_RANKS}
+    actor_rollout_ref.actor.profiler.all_ranks=${PROFILE_RANKS_ALL}
+    actor_rollout_ref.actor.profiler.tool_config.npu.discrete=${DISCRETE}
+    actor_rollout_ref.actor.profiler.tool_config.npu.contents=${CONTENTS}
+    actor_rollout_ref.actor.profiler.tool_config.npu.level=${LEVEL}
+    actor_rollout_ref.actor.profiler.tool_config.npu.analysis=${ANALYSIS}
+    actor_rollout_ref.ref.profiler.enable=True
+    actor_rollout_ref.ref.profiler.ranks=${PROFILE_RANKS}
+    actor_rollout_ref.ref.profiler.all_ranks=${PROFILE_RANKS_ALL}
+    actor_rollout_ref.ref.profiler.tool_config.npu.discrete=${DISCRETE}
+    actor_rollout_ref.ref.profiler.tool_config.npu.contents=${CONTENTS}
+    actor_rollout_ref.ref.profiler.tool_config.npu.level=${LEVEL}
+    actor_rollout_ref.ref.profiler.tool_config.npu.analysis=${ANALYSIS}
+)
+
 EXTRA=(
     distillation.enabled=True
     distillation.colocate_with_actor_rollout=${COLOCATE_WITH_ACTOR_ROLLOUT}
@@ -247,7 +291,6 @@ fi
 
 
 ########################### launch ###########################
-start_time=$(date +%Y%m%d)_$(date +%H%M%S)
 mkdir -p logs
 python3 -m verl.trainer.main_ppo \
     --config-path=config \
@@ -258,6 +301,7 @@ python3 -m verl.trainer.main_ppo \
     "${ACTOR[@]}" \
     "${ROLLOUT[@]}" \
     "${TRAINER[@]}" \
+    "${PROFILER[@]}" \
     "${EXTRA[@]}" \
     "${MINDSPEED_CONFIG[@]}" \
     "$@" 2>&1 | tee logs/qwen3_5-2b-35b-mm-fsdp-1kto1k-${start_time}.log

@@ -197,20 +197,26 @@ MINDSPEED_CONFIG=(
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.model.model_id=qwen3_5
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.model.use_triton_gdn=True
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.model.freeze='[model.visual]'
-    +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fsdp_plan.apply_modules="['model.visual.blocks.{*}', \
-    'model.visual', 'model.language_model.layers.{*}', 'model.language_model.embed_tokens', 'model.language_model', 'lm_head']"
+    +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fsdp_plan.apply_modules="['model.visual', \
+    'model.visual.blocks.{*}', 'model.language_model', 'model.language_model.embed_tokens', \
+    'model.language_model.layers.{*}', 'lm_head']"
+    +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fsdp_plan.hook_modules="['model.language_model.layers.{*}']"
     actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fsdp_plan.param_dtype=bf16 
     actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fsdp_plan.reduce_dtype=fp32 # gradient allreduce 用 fp32 更稳 
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fsdp_plan.output_dtype=bf16 
+    +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fsdp_plan.num_to_forward_prefetch=1
+    +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fsdp_plan.num_to_backward_prefetch=1
+    +actor_rollout_ref.ref.mindspeed.fsdp_kwargs.parallel.fsdp_plan.num_to_forward_prefetch=1
+    +actor_rollout_ref.ref.mindspeed.fsdp_kwargs.parallel.fsdp_plan.num_to_backward_prefetch=1
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.recompute=True
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.recompute_plan.apply_modules="['model.language_model.layers.{*}']"
     actor_rollout_ref.actor.mindspeed.ulysses_sequence_parallel_size=$sp_size
     actor_rollout_ref.ref.mindspeed.ulysses_sequence_parallel_size=$sp_size
     actor_rollout_ref.actor.mindspeed.param_offload=True
-    actor_rollout_ref.actor.mindspeed.optimizer_offload=True
+    actor_rollout_ref.actor.mindspeed.optimizer_offload=False
     actor_rollout_ref.actor.mindspeed.offload_policy=True
     actor_rollout_ref.ref.mindspeed.param_offload=True
-    actor_rollout_ref.ref.mindspeed.optimizer_offload=True
+    actor_rollout_ref.ref.mindspeed.optimizer_offload=False
     actor_rollout_ref.ref.mindspeed.offload_policy=True
     actor_rollout_ref.actor.optim.optimizer=adamw
 )

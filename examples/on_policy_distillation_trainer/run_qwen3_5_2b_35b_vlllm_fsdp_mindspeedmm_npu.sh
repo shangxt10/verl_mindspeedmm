@@ -72,9 +72,9 @@ use_policy_gradient=${USE_POLICY_GRADIENT:-True}
 distillation_topk=${DISTILLATION_TOPK:-64}
 
 # GRAD_ACC = PPO_MINI_BATCH_SIZE / ( n_gpus x PPO_MICRO_BATCH_SIZE_PER_GPU )
-train_batch_size=${TRAIN_BATCH_SIZE:-128}
-PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-128}
-PPO_MICRO_BATCH_SIZE_PER_GPU=${PPO_MICRO_BATCH_SIZE:-1}
+train_batch_size=${TRAIN_BATCH_SIZE:-32}
+PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-32}
+PPO_MICRO_BATCH_SIZE_PER_GPU=${PPO_MICRO_BATCH_SIZE:-2}
 GRAD_ACCU_STEPS=$((PPO_MINI_BATCH_SIZE / NGPUS_PER_NODE / PPO_MICRO_BATCH_SIZE_PER_GPU))
 max_prompt_length=${MAX_PROMPT_LENGTH:-1024}
 max_response_length=${MAX_RESPONSE_LENGTH:-1024}
@@ -84,17 +84,17 @@ DATA_LOAD_SEED=${DATA_LOAD_SEED:-42}
 
 actor_lr=${ACTOR_LR:-1e-6}
 
-rollout_tp=${ROLLOUT_TP:-2}
+rollout_tp=${ROLLOUT_TP:-1}
 # Start conservatively for 8-card co-location. vLLM's utilization mostly caps
 # KV/cache allocation; model weights and student training peaks still need room.
-rollout_gpu_mem_util=${ROLLOUT_GPU_MEM_UTIL:-0.25}
-rollout_max_num_seqs=${ROLLOUT_MAX_NUM_SEQS:-16}
+rollout_gpu_mem_util=${ROLLOUT_GPU_MEM_UTIL:-0.20}
+rollout_max_num_seqs=${ROLLOUT_MAX_NUM_SEQS:-8}
 teacher_tp=${TEACHER_TP:-${NGPUS_PER_NODE}}
 # Keep vLLM-Ascend MoE expert parallel disabled by default for Qwen3.5-35B-A3B.
 # The EP path can hit fused MoE grouped-matmul shape mismatches on NPU; TP=8
 # still uses all 8 visible logical NPUs for the teacher replica.
 teacher_ep=${TEACHER_EP:-1}
-teacher_gpu_mem_util=${TEACHER_GPU_MEM_UTIL:-0.25}
+teacher_gpu_mem_util=${TEACHER_GPU_MEM_UTIL:-0.20}
 
 total_epochs=${TOTAL_EPOCHS:-15}
 save_freq=${SAVE_FREQ:-50}
@@ -185,6 +185,8 @@ ROLLOUT=(
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${PPO_MAX_TOKEN_LEN_PER_GPU}
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${PPO_MICRO_BATCH_SIZE_PER_GPU}
     actor_rollout_ref.rollout.calculate_log_probs=True
+    +actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.cudagraph_mode="FULL_DECODE_ONLY"
+#    +actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.cudagraph_capture_sizes="[4,8,12,16,24,32,48,56,64]"
 )
 
 MINDSPEED_CONFIG=(
@@ -197,7 +199,7 @@ MINDSPEED_CONFIG=(
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.model.model_id=qwen3_5
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.model.use_triton_gdn=True
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.model.freeze='[model.visual]'
-    actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fully_shard_parallel_size=2
+    actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fully_shard_parallel_size=8
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.fsdp_plan.apply_modules="['model.visual', \
     'model.visual.blocks.{*}', 'model.language_model', 'model.language_model.embed_tokens', \
     'model.language_model.layers.{*}', 'lm_head']"
@@ -211,12 +213,14 @@ MINDSPEED_CONFIG=(
     +actor_rollout_ref.actor.mindspeed.fsdp_kwargs.parallel.recompute_plan.apply_modules="['model.language_model.layers.{*}']"
     actor_rollout_ref.actor.mindspeed.ulysses_sequence_parallel_size=$sp_size
     actor_rollout_ref.ref.mindspeed.ulysses_sequence_parallel_size=$sp_size
-    actor_rollout_ref.actor.mindspeed.param_offload=True
+    actor_rollout_ref.actor.mindspeed.param_offload=False
     actor_rollout_ref.actor.mindspeed.optimizer_offload=False
-    actor_rollout_ref.actor.mindspeed.offload_policy=True
-    actor_rollout_ref.ref.mindspeed.param_offload=True
+    actor_rollout_ref.actor.mindspeed.offload_policy=False
+    actor_rollout_ref.actor.mindspeed.reshard_after_forward=False
+    actor_rollout_ref.ref.mindspeed.param_offload=False
     actor_rollout_ref.ref.mindspeed.optimizer_offload=False
-    actor_rollout_ref.ref.mindspeed.offload_policy=True
+    actor_rollout_ref.ref.mindspeed.offload_policy=False
+    actor_rollout_ref.ref.mindspeed.reshard_after_forward=False
     actor_rollout_ref.actor.optim.optimizer=adamw
 )
 
@@ -306,7 +310,8 @@ python3 -m verl.trainer.main_ppo \
     "${ACTOR[@]}" \
     "${ROLLOUT[@]}" \
     "${TRAINER[@]}" \
-    "${PROFILER[@]}" \
     "${EXTRA[@]}" \
     "${MINDSPEED_CONFIG[@]}" \
     "$@" 2>&1 | tee logs/qwen3_5-2b-35b-mm-fsdp-1kto1k-${start_time}.log
+
+#    "${PROFILER[@]}" \

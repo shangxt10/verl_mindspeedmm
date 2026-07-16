@@ -17,7 +17,7 @@ export OMP_NUM_THREADS=1
 # ---- NPU env ----------------------------------------------------------------
 # 8 dies expose 16 logical NPUs on this machine. Use the first 4 dies by default:
 # die0=(0,1), die1=(2,3), die2=(4,5), die3=(6,7).
-export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-8,9,10,11,12,13,14,15}
 VISIBLE_DEVICE_COUNT=$(awk -F',' '{print NF}' <<< "${ASCEND_RT_VISIBLE_DEVICES}")
 # original: VLLM_ATTENTION_BACKEND=ASCEND
 export VLLM_ATTENTION_BACKEND=ASCEND
@@ -88,7 +88,10 @@ rollout_tp=${ROLLOUT_TP:-1}
 # Start conservatively for 8-card co-location. vLLM's utilization mostly caps
 # KV/cache allocation; model weights and student training peaks still need room.
 rollout_gpu_mem_util=${ROLLOUT_GPU_MEM_UTIL:-0.20}
-rollout_max_num_seqs=${ROLLOUT_MAX_NUM_SEQS:-8}
+ROLLOUT_MAX_NUM_SEQS=${ROLLOUT_MAX_NUM_SEQS:-1024}
+ROLLOUT_MAX_NUM_BATCHED_TOKENS=${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-8192}
+TEACHER_MAX_NUM_SEQS=${TEACHER_MAX_NUM_SEQS:-1024}
+TEACHER_MAX_NUM_BATCHED_TOKENS=${TEACHER_MAX_NUM_BATCHED_TOKENS:-8192}
 teacher_tp=${TEACHER_TP:-${NGPUS_PER_NODE}}
 # Keep vLLM-Ascend MoE expert parallel disabled by default for Qwen3.5-35B-A3B.
 # The EP path can hit fused MoE grouped-matmul shape mismatches on NPU; TP=8
@@ -132,7 +135,7 @@ test_data=/home/s00525112/data/gsm8k/test.parquet
 train_files="['$train_data']"
 val_files="['$test_data']"
 
-max_num_tokens=$(( max_prompt_length + max_response_length + 1 ))
+max_model_len=$(( max_prompt_length + max_response_length + 1 ))
 ########################### parameter arrays ###########################
 
 DATA=(
@@ -177,10 +180,11 @@ ROLLOUT=(
     actor_rollout_ref.rollout.dtype=bfloat16
     actor_rollout_ref.rollout.tensor_model_parallel_size=${rollout_tp}
     actor_rollout_ref.rollout.gpu_memory_utilization=${rollout_gpu_mem_util}
-    actor_rollout_ref.rollout.max_num_seqs=${rollout_max_num_seqs}
+    actor_rollout_ref.rollout.max_num_seqs=${ROLLOUT_MAX_NUM_SEQS}
+    actor_rollout_ref.rollout.max_num_batched_tokens=${ROLLOUT_MAX_NUM_BATCHED_TOKENS}
     actor_rollout_ref.rollout.enforce_eager=False
     actor_rollout_ref.rollout.n=1
-    actor_rollout_ref.rollout.max_model_len=${max_num_tokens}
+    actor_rollout_ref.rollout.max_model_len=${max_model_len}
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=False
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${PPO_MAX_TOKEN_LEN_PER_GPU}
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${PPO_MICRO_BATCH_SIZE_PER_GPU}
@@ -268,8 +272,9 @@ EXTRA=(
     distillation.teacher_models.teacher_model.inference.expert_parallel_size=${teacher_ep}
     distillation.teacher_models.teacher_model.inference.name=${ROLLOUT_BACKEND}
     distillation.teacher_models.teacher_model.inference.gpu_memory_utilization=${teacher_gpu_mem_util}
-    distillation.teacher_models.teacher_model.inference.max_model_len=${max_num_tokens}
-    distillation.teacher_models.teacher_model.inference.max_num_batched_tokens=${max_num_tokens}
+    distillation.teacher_models.teacher_model.inference.max_model_len=${max_model_len}
+    distillation.teacher_models.teacher_model.inference.max_num_seqs=${TEACHER_MAX_NUM_SEQS}
+    distillation.teacher_models.teacher_model.inference.max_num_batched_tokens=${TEACHER_MAX_NUM_BATCHED_TOKENS}
     distillation.teacher_models.teacher_model.inference.dtype=bfloat16
     distillation.distillation_loss.loss_mode=${distillation_loss_mode}
     distillation.distillation_loss.topk=${distillation_topk}
@@ -280,7 +285,6 @@ EXTRA=(
     distillation.teacher_models.teacher_model.inference.enforce_eager=True
     distillation.teacher_models.teacher_model.inference.enable_chunked_prefill=False
     distillation.teacher_models.teacher_model.inference.enable_prefix_caching=False
-    distillation.teacher_models.teacher_model.inference.max_num_seqs=16
 )
 
 if [ "${ROLLOUT_BACKEND}" = "sglang" ]; then

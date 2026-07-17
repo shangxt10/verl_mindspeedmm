@@ -88,9 +88,9 @@ rollout_tp=${ROLLOUT_TP:-1}
 # Start conservatively for 8-card co-location. vLLM's utilization mostly caps
 # KV/cache allocation; model weights and student training peaks still need room.
 rollout_gpu_mem_util=${ROLLOUT_GPU_MEM_UTIL:-0.20}
-ROLLOUT_MAX_NUM_SEQS=${ROLLOUT_MAX_NUM_SEQS:-1024}
+ROLLOUT_MAX_NUM_SEQS=${ROLLOUT_MAX_NUM_SEQS:-8}
 ROLLOUT_MAX_NUM_BATCHED_TOKENS=${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-8192}
-TEACHER_MAX_NUM_SEQS=${TEACHER_MAX_NUM_SEQS:-1024}
+TEACHER_MAX_NUM_SEQS=${TEACHER_MAX_NUM_SEQS:-8}
 TEACHER_MAX_NUM_BATCHED_TOKENS=${TEACHER_MAX_NUM_BATCHED_TOKENS:-8192}
 teacher_tp=${TEACHER_TP:-${NGPUS_PER_NODE}}
 # Keep vLLM-Ascend MoE expert parallel disabled by default for Qwen3.5-35B-A3B.

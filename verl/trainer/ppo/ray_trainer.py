@@ -335,6 +335,35 @@ class RayPPOTrainer:
         if self._is_teacher_colocated_with_actor_rollout():
             self.teacher_model_manager.wake_up_replicas()
 
+    def _print_opd_step_timing(self, timing_raw: dict[str, float]):
+        def sec(name: str) -> float:
+            return float(timing_raw.get(name, 0.0))
+
+        ref_key = str(Role.RefPolicy)
+        reward_old_ref_value = sec("reward") + sec("old_log_prob") + sec(ref_key) + sec("values")
+        print(
+            "[opd_step_timing] "
+            f"step={self.global_steps} "
+            f"prepare_prompt_batch={sec('prepare_prompt_batch'):.3f}s "
+            f"wake_teacher={sec('wake_teacher'):.3f}s "
+            f"student_rollout_generate_max={sec('agent_loop/generate_sequences/max'):.3f}s "
+            f"student_rollout_generate_mean={sec('agent_loop/generate_sequences/mean'):.3f}s "
+            f"teacher_forward_logprob_max={sec('agent_loop/compute_teacher_logprobs/max'):.3f}s "
+            f"teacher_forward_logprob_mean={sec('agent_loop/compute_teacher_logprobs/mean'):.3f}s "
+            f"generate_sequences_wall={sec('student_rollout_and_teacher_logprob'):.3f}s "
+            f"sleep_student_rollout_vllm={sec('sleep_student_rollout_vllm'):.3f}s "
+            f"sleep_teacher={sec('sleep_teacher'):.3f}s "
+            f"reward_old_ref_value={reward_old_ref_value:.3f}s "
+            f"reward={sec('reward'):.3f}s "
+            f"old_log_prob={sec('old_log_prob'):.3f}s "
+            f"ref_log_prob={sec(ref_key):.3f}s "
+            f"value={sec('values'):.3f}s "
+            f"actor_update={sec('update_actor'):.3f}s "
+            f"sync_actor_weights_to_rollout={sec('update_weights'):.3f}s "
+            f"step_total={sec('step'):.3f}s",
+            flush=True,
+        )
+
     def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler: Optional[Sampler]):
         """
         Creates the train and validation dataloaders.
@@ -1355,30 +1384,33 @@ class RayPPOTrainer:
                         if self.config.global_profiler.profile_continuous_steps
                         else curr_step_profile
                     )
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
-                batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
+                with marked_timer("prepare_prompt_batch", timing_raw):
+                    batch: DataProto = DataProto.from_single_dict(batch_dict)
+                    batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
 
-                # add uid to batch
-                batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
-                )
+                    # add uid to batch
+                    batch.non_tensor_batch["uid"] = np.array(
+                        [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
+                    )
 
-                gen_batch = self._get_gen_batch(batch)
+                    gen_batch = self._get_gen_batch(batch)
 
-                # pass global_steps to trace
-                gen_batch.meta_info["global_steps"] = self.global_steps
-                gen_batch_output = gen_batch.repeat(
-                    repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
-                )
+                    # pass global_steps to trace
+                    gen_batch.meta_info["global_steps"] = self.global_steps
+                    gen_batch_output = gen_batch.repeat(
+                        repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
+                    )
 
                 is_last_step = self.global_steps >= self.total_training_steps
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
-                        self._wake_up_colocated_teacher_replicas()
+                        with marked_timer("wake_teacher", timing_raw):
+                            self._wake_up_colocated_teacher_replicas()
                         if curr_step_profile:
                             self.async_rollout_manager.start_profile()
-                        gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
+                        with marked_timer("student_rollout_and_teacher_logprob", timing_raw):
+                            gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
                         # Debug: print a few student rollout prompts and responses for early training steps.
                         if self.global_steps < 3:
                             max_print = 10
@@ -1394,8 +1426,10 @@ class RayPPOTrainer:
                                     f"\n[response]\n{response_text}\n",
                                     flush=True,
                                 )
-                        self.checkpoint_manager.sleep_replicas()
-                        self._sleep_colocated_teacher_replicas()
+                        with marked_timer("sleep_student_rollout_vllm", timing_raw):
+                            self.checkpoint_manager.sleep_replicas()
+                        with marked_timer("sleep_teacher", timing_raw):
+                            self._sleep_colocated_teacher_replicas()
                         if curr_step_profile:
                             self.async_rollout_manager.stop_profile()
 
@@ -1581,7 +1615,8 @@ class RayPPOTrainer:
                     # implement critic warmup
                     if self.config.trainer.critic_warmup > self.global_steps:
                         # Still in critic warmup, only update weights to wake up rollout replicas.
-                        self.checkpoint_manager.update_weights(self.global_steps)
+                        with marked_timer("update_weights", timing_raw, color="red"):
+                            self.checkpoint_manager.update_weights(self.global_steps)
                     else:
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
@@ -1620,6 +1655,8 @@ class RayPPOTrainer:
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
                     if rollout_data_dir:
                         self._log_rollout_data(batch, reward_extra_infos_dict, timing_raw, rollout_data_dir)
+
+                self._print_opd_step_timing(timing_raw)
 
                 # validate
                 if self.config.trainer.test_freq > 0 and (

@@ -183,6 +183,7 @@ class AgentLoopMetrics(BaseModel):
     generate_sequences: float = 0.0
     tool_calls: float = 0.0
     compute_score: float = 0.0
+    compute_teacher_logprobs: float = 0.0
     num_preempted: int = -1  # -1 means not available
 
 
@@ -930,17 +931,20 @@ class AgentLoopWorker:
     ) -> None:
         """Compute teacher logprobs for single sample."""
         if self.distillation_enabled and not validate:
-            routing_key = None
-            if sample_kwargs is not None:
-                routing_value = sample_kwargs.get(self.teacher_key)
-                if routing_value is not None:
-                    # Non-tensor batch values arrive as 0-d numpy objects / arrays; normalize to Python.
-                    routing_key = routing_value.item() if hasattr(routing_value, "item") else routing_value
-            teacher_ids, teacher_logprobs = await self.teacher_server_manager.compute_teacher_logprobs_single(
-                sequence_ids=prompt_ids + response_ids,
-                multi_modal_data=output.multi_modal_data,
-                routing_key=routing_key,
-            )
+            timing = {}
+            with simple_timer("compute_teacher_logprobs", timing):
+                routing_key = None
+                if sample_kwargs is not None:
+                    routing_value = sample_kwargs.get(self.teacher_key)
+                    if routing_value is not None:
+                        # Non-tensor batch values arrive as 0-d numpy objects / arrays; normalize to Python.
+                        routing_key = routing_value.item() if hasattr(routing_value, "item") else routing_value
+                teacher_ids, teacher_logprobs = await self.teacher_server_manager.compute_teacher_logprobs_single(
+                    sequence_ids=prompt_ids + response_ids,
+                    multi_modal_data=output.multi_modal_data,
+                    routing_key=routing_key,
+                )
+            output.metrics.compute_teacher_logprobs = timing["compute_teacher_logprobs"]
             output.extra_fields["teacher_ids"] = teacher_ids
             output.extra_fields["teacher_logprobs"] = teacher_logprobs
 
@@ -1249,6 +1253,9 @@ class AgentLoopManager:
         t_generate_sequences = np.array([metric["generate_sequences"] for chunk in metrics for metric in chunk])
         t_tool_calls = np.array([metric["tool_calls"] for chunk in metrics for metric in chunk])
         t_compute_score = np.array([metric["compute_score"] for chunk in metrics for metric in chunk])
+        t_compute_teacher_logprobs = np.array(
+            [metric.get("compute_teacher_logprobs", 0.0) for chunk in metrics for metric in chunk]
+        )
         num_preempted = np.array([metric["num_preempted"] for chunk in metrics for metric in chunk])
         timing["agent_loop/num_preempted/min"] = num_preempted.min()
         timing["agent_loop/num_preempted/max"] = num_preempted.max()
@@ -1262,13 +1269,17 @@ class AgentLoopManager:
         timing["agent_loop/compute_score/min"] = t_compute_score.min()
         timing["agent_loop/compute_score/max"] = t_compute_score.max()
         timing["agent_loop/compute_score/mean"] = t_compute_score.mean()
+        timing["agent_loop/compute_teacher_logprobs/min"] = t_compute_teacher_logprobs.min()
+        timing["agent_loop/compute_teacher_logprobs/max"] = t_compute_teacher_logprobs.max()
+        timing["agent_loop/compute_teacher_logprobs/mean"] = t_compute_teacher_logprobs.mean()
 
         # batch sequence generation is bounded by the slowest sample
-        slowest = np.argmax(t_generate_sequences + t_tool_calls + t_compute_score)
+        slowest = np.argmax(t_generate_sequences + t_tool_calls + t_compute_score + t_compute_teacher_logprobs)
         prompt_length = output.batch["prompts"].shape[1]
         timing["agent_loop/slowest/generate_sequences"] = t_generate_sequences[slowest]
         timing["agent_loop/slowest/tool_calls"] = t_tool_calls[slowest]
         timing["agent_loop/slowest/compute_score"] = t_compute_score[slowest]
+        timing["agent_loop/slowest/compute_teacher_logprobs"] = t_compute_teacher_logprobs[slowest]
         timing["agent_loop/slowest/num_preempted"] = num_preempted[slowest]
 
         if "attention_mask" in output.batch:
